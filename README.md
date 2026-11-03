@@ -98,6 +98,8 @@ If you keep your projects in one folder, `glint -P` shows them side by side: the
 
 ## For coding agents
 
+A ready-made Claude Code skill is in [`skill/SKILL.md`](skill/SKILL.md). Install it with `mkdir -p ~/.claude/skills/glint && cp skill/SKILL.md ~/.claude/skills/glint/`.
+
 `glint -A` prints a plain-text description of a directory that's meant to be read by an AI agent. The first lines say what the project is, what state git is in, what changed and what's ignored. After that comes a tree that fits a line budget (200 lines by default, set with `--budget`).
 
 ```console
