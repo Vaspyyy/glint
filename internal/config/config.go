@@ -1,0 +1,113 @@
+// Package config loads ~/.config/glint/config.toml.
+//
+// Every top-level key is a long flag name (theme = "nord", classify = true,
+// ignore = ["*.tmp"]), and [themes.NAME] tables define custom palettes.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/BurntSushi/toml"
+
+	"github.com/Vaspyyy/glint/internal/theme"
+)
+
+func Path() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "glint", "config.toml")
+}
+
+type Setter interface {
+	Set(name, value string) error
+}
+
+// Load applies flag defaults from the config file and registers custom
+// themes. A missing file is not an error.
+func Load(path string, flags Setter) error {
+	raw := map[string]any{}
+	if _, err := toml.DecodeFile(path, &raw); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if themes, ok := raw["themes"].(map[string]any); ok {
+		if err := loadThemes(themes); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		delete(raw, "themes")
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		vals := []any{raw[k]}
+		if list, ok := raw[k].([]any); ok {
+			vals = list
+		}
+		for _, v := range vals {
+			if b, ok := v.(bool); ok && !b {
+				continue // `foo = false` simply leaves the default alone
+			}
+			if err := flags.Set(k, fmt.Sprint(v)); err != nil {
+				return fmt.Errorf("%s: %s: %w", path, k, err)
+			}
+		}
+	}
+	return nil
+}
+
+func loadThemes(themes map[string]any) error {
+	for name, v := range themes {
+		tbl, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("themes.%s must be a table", name)
+		}
+		base := theme.Palettes["catppuccin"]
+		if ext, ok := tbl["extends"].(string); ok {
+			p, err := theme.Lookup(ext)
+			if err != nil {
+				return fmt.Errorf("themes.%s: %w", name, err)
+			}
+			base = p
+		}
+		for k, c := range tbl {
+			if k == "extends" {
+				continue
+			}
+			slot, ok := theme.ParseSlot(k)
+			if !ok {
+				return fmt.Errorf("themes.%s: unknown color %q", name, k)
+			}
+			base[slot] = fmt.Sprint(c)
+		}
+		theme.Palettes[name] = base
+	}
+	return nil
+}
+
+const Sample = `# glint config — every key is a long flag name (see glint --help)
+
+# theme = "tokyonight"      # catppuccin, tokyonight, gruvbox, nord, wal, or your own below
+# icons = "always"
+# classify = true
+# hyperlink = true
+# peek = true
+# group-dirs = "first"
+# time-style = "relative"
+# ignore = ["*.pyc", "__pycache__"]
+
+# [themes.midnight]
+# extends = "catppuccin"
+# blue = "#7aa2f7"
+# purple = "#bb9af7"
+`
