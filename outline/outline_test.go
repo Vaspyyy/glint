@@ -191,3 +191,12 @@ func TestBracesInParameters(t *testing.T) {
 		t.Errorf("go: got %s", got)
 	}
 }
+
+// impl blocks with lifetimes or generics name their methods after the bare type.
+func TestRustImplWithLifetimes(t *testing.T) {
+	src := "impl<'a> Shape for Grid<'a> {\n    fn area(&self) -> f64 {\n        1.0\n    }\n}\n\nimpl<T: Copy> Stack<T> {\n    fn push(&mut self, x: T) {}\n}\n"
+	want := "impl Shape for Grid<'a> 1-5; fn Grid.area 2-4; impl Stack<T> 7-9; fn Stack.push 8-8"
+	if got := spans("a.rs", src); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}

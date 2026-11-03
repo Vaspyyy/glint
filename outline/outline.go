@@ -128,7 +128,7 @@ var (
 	})
 	rustRules = prepare([]rule{
 		r("", `^\s{0,4}(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
-		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, ]+?)(?: \{|$| where)`),
+		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, '&]+?)(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^(?:    )?(?:async )?(def|class) (\w+)`),
@@ -424,6 +424,9 @@ func Qualified(syms []Symbol, i int) string {
 		if syms[p].Kind == "impl" { // "impl Shape for Circle": the methods are Circle's
 			if _, typ, ok := strings.Cut(parent, " for "); ok {
 				parent = typ
+			}
+			if i := strings.IndexByte(parent, '<'); i > 0 {
+				parent = parent[:i] // Grid<'a>: Grid
 			}
 		}
 		name = parent + "." + name
