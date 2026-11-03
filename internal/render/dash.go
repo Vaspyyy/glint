@@ -36,8 +36,8 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 	f.line()
 	f.line()
 
+	nameW := 26
 	const (
-		nameW  = 26
 		stackW = 13
 		brW    = 16
 		stateW = 13
@@ -46,15 +46,34 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 		sizeW  = 8
 		gap    = 2
 	)
-	fixed := nameW + stackW + brW + stateW + ageW + 1 + sparkW + sizeW + gap*7
-	subjW := r.cfg.Width - fixed
-	showSubj := subjW >= 12
-	showBranch := r.cfg.Width >= fixed-brW-gap+4
+	// drop columns, least useful first, until a row fits (one column of
+	// slack: writing into the last column makes some terminals wrap)
+	avail := r.cfg.Width - 1
+	showStack, showBranch, showSpark := true, true, true
+	used := nameW + gap + stackW + gap + brW + gap + stateW + gap + ageW + gap + sparkW + gap + sizeW
+	if used > avail {
+		showBranch, used = false, used-brW-gap
+	}
+	if used > avail {
+		showSpark, used = false, used-sparkW-gap
+	}
+	if used > avail {
+		showStack, used = false, used-stackW-gap
+	}
+	if used > avail { // last resort: shorter project names
+		cut := min(used-avail, nameW-12)
+		nameW, used = nameW-cut, used-cut
+	}
+	subjW := avail - used - 1
+	showSubj := subjW >= 14
 
 	hdr := r.fg[theme.Muted].Underline()
 	cell := func(s string, wd int) string { return textw.Pad(s, wd) }
 	sp := spaces(gap)
-	f.WriteString(cell(hdr.Render("Project"), nameW) + sp + cell(hdr.Render("Stack"), stackW) + sp)
+	f.WriteString(cell(hdr.Render("Project"), nameW) + sp)
+	if showStack {
+		f.WriteString(cell(hdr.Render("Stack"), stackW) + sp)
+	}
 	if showBranch {
 		f.WriteString(cell(hdr.Render("Branch"), brW) + sp)
 	}
@@ -64,7 +83,11 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 	} else {
 		f.WriteString(cell(hdr.Render("Last"), ageW))
 	}
-	f.WriteString(sp + cell(hdr.Render("12 weeks"), sparkW) + sp + spaces(sizeW-4) + hdr.Render("Size"))
+	f.WriteString(sp)
+	if showSpark {
+		f.WriteString(cell(hdr.Render("12 weeks"), sparkW) + sp)
+	}
+	f.WriteString(spaces(sizeW-4) + hdr.Render("Size"))
 	f.line()
 
 	for _, row := range rows {
@@ -85,11 +108,13 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 		}
 		f.WriteString(cell(nameCell, nameW) + sp)
 
-		stack := ""
-		if row.Info != nil {
-			stack = r.fg[row.Info.Color].Render(row.Info.Stack)
+		if showStack {
+			stack := ""
+			if row.Info != nil {
+				stack = r.fg[row.Info.Color].Render(row.Info.Stack)
+			}
+			f.WriteString(cell(stack, stackW) + sp)
 		}
-		f.WriteString(cell(stack, stackW) + sp)
 
 		if showBranch {
 			br := ""
@@ -126,13 +151,16 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 		} else if !row.Newest.IsZero() {
 			d := r.cfg.Now.Sub(row.Newest)
 			ago = r.ageStyle(d).Faint().Render(strings.TrimSpace(shortAge(d.Hours())))
-			subject = "newest file (no git)"
+			subject = "newest file"
 		}
 		f.WriteString(cell(ago, ageW))
 		if showSubj {
 			f.WriteString(" " + cell(r.faint.Render(textw.Truncate(subject, subjW)), subjW))
 		}
-		f.WriteString(sp + r.spark(row.Weekly) + sp)
+		f.WriteString(sp)
+		if showSpark {
+			f.WriteString(r.spark(row.Weekly) + sp)
+		}
 
 		size := ""
 		if row.Files > 0 {
@@ -144,10 +172,10 @@ func (r *Renderer) Dashboard(w io.Writer, dir *fsx.Entry, rows []*dash.Row) {
 
 	f.line()
 	dot := r.faint.Render(" · ")
-	f.WriteString(r.fg[theme.Blue].Bold().Render(strconv.Itoa(repos)) + r.faint.Render(" repos") + dot +
-		r.fg[theme.Yellow].Bold().Render(strconv.Itoa(dirty)) + r.faint.Render(" with uncommitted work") + dot +
-		r.fg[theme.Green].Bold().Render(strconv.Itoa(active)) + r.faint.Render(" active this week") + dot +
-		r.sizeText(total) + r.faint.Render(" of source"))
+	f.WriteString(textw.Truncate(r.fg[theme.Blue].Bold().Render(strconv.Itoa(repos))+r.faint.Render(" repos")+dot+
+		r.fg[theme.Yellow].Bold().Render(strconv.Itoa(dirty))+r.faint.Render(" with uncommitted work")+dot+
+		r.fg[theme.Green].Bold().Render(strconv.Itoa(active))+r.faint.Render(" active this week")+dot+
+		r.sizeText(total)+r.faint.Render(" of source"), avail))
 	f.line()
 	f.flush()
 }

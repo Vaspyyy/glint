@@ -1,113 +1,263 @@
+<div align="center">
+
 # ✦ glint
 
-`ls`, but make it pretty. Nerd Font icons, git superpowers, previews, treemaps, thumbnails, and it's still instant.
+**`ls`, reimagined for humans *and* AI agents.**
+
+Icons, git, previews, disk maps and project dashboards for you, plus a token-efficient repo map for your coding agent.<br>
+One static binary, starts in ~4 ms.
+
+[![Go](https://img.shields.io/github/go-mod/go-version/Vaspyyy/glint?style=flat-square&labelColor=1e1e2e&color=89b4fa&logo=go&logoColor=89b4fa)](go.mod)
+[![Release](https://img.shields.io/github/v/tag/Vaspyyy/glint?style=flat-square&labelColor=1e1e2e&color=cba6f7&label=release)](https://github.com/Vaspyyy/glint/tags)
+[![License](https://img.shields.io/github/license/Vaspyyy/glint?style=flat-square&labelColor=1e1e2e&color=a6e3a1)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-linux%20%C2%B7%20macOS-f9e2af?style=flat-square&labelColor=1e1e2e)](#install)
+
+<img src="assets/hero.gif" alt="glint: grid, long and tree views" width="900">
+
+[Install](#install) · [Views](#views) · [Interactive browser](#interactive-browser) · [Dashboard](#project-dashboard) · [Disk map](#disk-map) · [For AI agents](#for-ai-agents) · [Config](#configuration)
+
+</div>
+
+---
+
+## Why glint?
+
+`ls` tells you *names*. glint tells you **what you're looking at**:
+
+- 🎨 **Beautiful by default.** Nerd Font icons for 190+ file types and names, colored permissions, sizes that heat up as they grow, relative times that fade with age. Five built-in themes, or [your own](#configuration).
+- 🌿 **Git-aware everywhere.** Per-file status, folder rollups, branch / ahead / behind in the header, last commit and churn per file.
+- 🔍 **An interactive browser** with syntax-highlighted previews, **content search**, file actions, a project jumper and a mouse-driven **disk map**.
+- 📊 **A dashboard for your projects folder**: every repo's stack, branch, uncommitted work, last commit and 12 weeks of activity on one screen.
+- 🤖 **Built for coding agents too.** `glint -A` answers *"what is this project, where's the code, what changed?"* in one call, at a fraction of the tokens of `tree`.
+- ⚡ **Fast.** Parallel `lstat`, one `git status` per listing, no heavy dependencies: the TUI, styling and highlighter are hand-rolled to keep startup at ~4 ms.
+
+## Install
 
 ```sh
-go install github.com/Vaspyyy/glint@latest      # installs `glint` into ~/go/bin (needs Go 1.26+)
-echo 'glint --init fish | source' >> ~/.config/fish/config.fish   # optional: completions, `gi`, auto-list on cd
-glint --help
+go install github.com/Vaspyyy/glint@latest
 ```
 
-Icons need a [Nerd Font](https://www.nerdfonts.com/) (or run with `--icons never`). Content search in the browser uses [ripgrep](https://github.com/BurntSushi/ripgrep), the trash uses `gio` (GNOME/KDE desktops ship it).
+<details>
+<summary><b>Requirements & optional extras</b></summary>
+
+<br>
+
+| | |
+| --- | --- |
+| **Go 1.26+** | to build. Older Go versions download the right toolchain automatically. |
+| **A [Nerd Font](https://www.nerdfonts.com/)** | for icons. No Nerd Font? Run with `--icons never` or put `icons = "never"` in your config. |
+| **[ripgrep](https://github.com/BurntSushi/ripgrep)** | for content search in the browser. |
+| **`gio`** | for "move to trash" (ships with GNOME and KDE desktops). |
+| **`ffprobe`** | optional: media durations in `--peek`. |
+
+Developed on Linux. It builds for macOS and the BSDs too, but those are less tested (and "move to trash" needs `gio`). Windows isn't supported yet.
+
+</details>
+
+**Shell integration (fish):** completions, `gi` (browse, then `cd` to where you quit) and optional auto-listing on `cd`:
+
+```fish
+# ~/.config/fish/config.fish
+glint --init fish --auto-ls | source
+```
 
 ## Views
 
-| command | what you get |
+| Command | What you get |
 | --- | --- |
-| `glint` | column grid with icons and colors |
-| `glint -l` | detailed table: colored permissions, size heat, relative times, git status |
-| `glint -T` / `-lT` | tree, optionally as a table |
-| `glint -i` | **interactive browser**: fuzzy filter, previews (code, markdown, images, archives, hex), mouse, `$EDITOR`, clipboard, file actions, content search, project jumping, disk map (see below) |
-| `gi` | same, but your shell `cd`s to wherever you quit (fish integration) |
-| `glint -p` | **peek**: what's inside — project stack, line counts, image size, media duration, archive file count, PDF pages, ELF info |
-| `glint -C` | **project card**: stack, branch, last commit, language bar, lines, TODOs |
-| `glint -P` | **project dashboard** for a folder of projects: stack, branch, uncommitted changes, last commit, 12-week activity sparkline, source size |
-| `glint -M` | **disk map**: treemap measured like `du`, regenerable build output hatched, plus "you could free 56 GB" with how (`cargo clean`, …) |
-| `glint -M -i` | the disk map, interactive: arrows/click to select, enter to drill in, ⌫ up, `o` to jump into the browser |
-| `glint --thumbs` | **image thumbnails** (kitty graphics protocol or Unicode half blocks) |
-| `glint -W` | **live** listing that updates as files change |
-| `glint --json` | everything above, machine-readable |
+| `glint` | Column grid with icons and colors |
+| `glint -l` | Detailed table: permissions, size, relative time, git status |
+| `glint -T` · `glint -lT` | Tree, or tree as a table (`-L 2` limits depth) |
+| `glint -p` | **Peek**: what's inside each entry: project stack, line count, image size, media duration, archive contents, PDF pages… |
+| `glint -lcH` | Last commit and git churn heat per entry |
+| `glint -C` | Project card: stack, branch, language bar, lines of code, TODOs |
+| `glint --thumbs` | Image thumbnails (kitty graphics protocol, or Unicode half-blocks anywhere) |
+| `glint -W` | Live listing that updates as files change |
+| `glint --json` | Everything, machine-readable |
 
-## For AI agents: `glint -A`
+<div align="center">
+<img src="assets/thumbs.png" alt="glint --thumbs: an image thumbnail grid" width="820">
+</div>
 
-A plain-text, token-efficient view designed for coding agents: one call answers *what is this project, where is the code, what changed, what's worth reading*.
+Filters work with every view: `-a` hidden files · `-D`/`-f` dirs/files only · `-I '*.tmp'` · `--gitignore` · `--changed` (only uncommitted files, great with `-T`) · `--since 2h`.
 
-- **Budgeted tree:** expands folders by value (code and docs before media and vendored code, breadth before depth) until about `--budget` lines (default 200). Collapsed folders still show file counts, size and their main file types.
-- **Nothing silently missing:** the top level is always complete (empty and `.git`-only folders included and labelled), and every cut says what it left out, naming the folders.
-- **No budget wasted on repetition:** numbered files fold into one line (`frame_{001..240}.png ×240`), and families of similar folders (`run1/` … `run9/`) show the first one and summarise the rest.
-- **Workspaces of projects:** every project gets a one-line glance at its contents before any single one is expanded.
-- **Useful facts per entry:** line counts for text files (`main.go 120L`), size for binaries, image dimensions, `exec`, symlink targets, git status (`[M]`, `[new]`).
-- **Header:** absolute path, detected stack, branch, uncommitted count, HEAD commit, the changed files and what's gitignored.
-- **Git-aware:** inside a repo it lists exactly what git sees (tracked plus untracked, minus ignored); outside, it skips `node_modules`, `target`, caches and so on, and says so.
-- `glint -A file.go` prints a symbol outline with line numbers, so an agent can read only the part it needs. Add `--outline` for one-line symbol lists in the tree.
-- `glint -A -M` shows disk usage as text: the biggest entries and what's inside them.
-- Works with `--changed`, `--since 2h`, `-c` (last commit per entry), `-l` (mode and age everywhere), `-L`, `-I`.
+## Interactive browser
 
-On a 4,000-file Rust workspace it uses about **2.9k tokens**, against 13k for `tree -L 2` and 50k for `git ls-files`, while also carrying stack, git state and line counts.
+`glint -i` (or `gi` with the fish integration) opens a full-screen browser with live previews: syntax-highlighted code, rendered markdown, images, archive listings and hex dumps.
 
-## Interactive browser keys
+<div align="center">
+<img src="assets/browser.gif" alt="glint -i: browsing, content search, project jumping and the disk map" width="900">
+</div>
 
-| key | does |
+| Key | Action |
 | --- | --- |
-| `f` / `ctrl+f` | search inside files (ripgrep): live results grouped by file, preview around the hit, enter opens `$EDITOR` at that line |
-| `P` / `ctrl+p` | jump to a recent folder or any project next to the ones you've used (fuzzy) |
-| `M` | disk map of the current folder |
-| `r` / `F2` · `d` / `del` | rename · move to trash (via `gio`, falls back to a confirmed permanent delete where there's no trash) |
-| `c` · `x` · `p` | copy · cut · paste into the current folder (name clashes become `name (copy).ext`) |
-| `n` · `N` | new file · new folder (nested paths allowed) |
-| `space` · `a` · `y` | select · select all · copy paths to the clipboard |
-| `/` · `.` · `s` · `R` | filter names · hidden files · sort · reverse |
+| `↑↓←→` / `hjkl` / mouse | Move, open folders, go up |
+| `/` | Fuzzy-filter names |
+| `f` · `ctrl+f` | **Search inside files** (ripgrep): live, grouped by file, preview around the hit; `enter` opens `$EDITOR` **at that line** |
+| `P` · `ctrl+p` | **Jump** to a recent folder or any project next to the ones you've visited |
+| `M` | **Disk map** of the current folder |
+| `r` · `d` | Rename · move to trash (asks before deleting permanently where there's no trash) |
+| `c` · `x` · `p` | Copy · cut · paste (clashes become `name (copy).ext`) |
+| `n` · `N` | New file · new folder |
+| `space` · `a` · `y` | Select · select all · copy paths to the clipboard (OSC 52) |
+| `e` · `o` | Open in `$EDITOR` · open with the default app |
+| `.` · `s` · `R` | Hidden files · cycle sort · reverse |
+| `?` | All keys |
 
-## Git
+## Project dashboard
 
-- per-file status, with directories summarising their contents, and branch/ahead/behind/dirty in the header
-- `-c` last commit per entry, `-H` churn heat (how often it changes)
-- `--changed` only uncommitted changes (great with `-T`), `--gitignore` hides ignored files
+`glint -P ~/projects` gives you one row per project: stack, branch, uncommitted changes, last commit, a 12-week activity sparkline and source size, sorted by recent activity (`-S` for size, `-s name`).
 
-## Filters, sorting, details
+<div align="center">
+<img src="assets/dashboard.png" alt="glint -P: a dashboard of every project's git state and activity" width="900">
+</div>
 
-`--since 2h` · `-I '*.tmp'` · `-D`/`-f` dirs/files only · natural, accent-aware sort (`file2 < file10`, `Öffentlich` next to `Musik`) · `-t -S -X -r` · `--du` folder sizes with bars · `--octal --inode --links --group` · `--hyperlink` clickable names · `-F` classify
+## Disk map
 
-## Config
+`glint -M` draws a treemap measured like `du` (allocated blocks, hardlinks counted once). Regenerable build output (`target/`, `node_modules/`, `.godot/`, `.venv/`, …) is **hatched**, and glint tells you how much you could free and how to get it back.
 
-`~/.config/glint/config.toml` (create one with `glint --init config`). Every key is a long flag name; `[themes.NAME]` tables define palettes:
+<div align="center">
+<img src="assets/diskmap.png" alt="glint -M: a disk usage treemap with regenerable build output hatched" width="820">
+</div>
 
-```toml
-theme = "midnight"
-peek = true
-ignore = ["__pycache__"]
+`glint -M -i` makes it interactive: arrow keys or the mouse select a block, `enter` drills in, `⌫` goes up, `o` jumps to that spot in the browser.
 
-[themes.midnight]
-extends = "tokyonight"
-blue = "#7aa2f7"
+## For AI agents
+
+`glint -A` is a plain-text view designed for coding agents: **no colors, a predictable line budget, and the facts an agent would otherwise need four or five commands for.**
+
+```console
+$ glint -A aurora --budget 40
+/home/ada/projects/aurora — Rust · workspace · git main 2 uncommitted; HEAD eb6f4a3 3h ago: Shader hot reload
+24 files, 76K (what git sees: tracked + untracked, excluding ignored)
+changed: [M] crates/aurora-render/src/gpu.rs, [new] crates/aurora-render/src/upscale.rs
+gitignored (hidden): target/
+largest source files (excl. vendored/generated): crates/aurora-core/src/math.rs 125L, crates/aurora-render/src/gpu.rs 103L, …
+
+assets/ (4 files, 37K)
+  textures/ (3 files, 14K; png×3)
+    ↳ checker.png marble.png sunset.png
+  logo.png 96x96 24K
+crates/ (13 files, 19K; newest file 1m ago) [2 changed]
+  aurora-core/ (5 files, 9.6K; Rust · aurora-core)
+    src/ (4 files, 9.5K)
+      camera.rs 53L
+      lib.rs 101L
+      math.rs 125L
+…
 ```
 
-Built-in themes: `catppuccin`, `tokyonight`, `gruvbox`, `nord`, and `wal` (follows pywal). `GLINT_OPTS` adds flags too.
+```console
+$ glint -A crates/aurora-render/src/gpu.rs
+…/gpu.rs — 103L (last commit 2mo ago: Initial path tracer) [M], modified 1m ago
+  3 pub struct Context
+  8 pub fn create_device(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
+  20 pub fn upload_scene(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
+  32 pub fn dispatch(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
+  44 pub fn readback(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
+```
 
-## Performance notes
+- **Budgeted tree.** Folders open by value until `--budget` lines (default 200): source and docs before media and vendored code, breadth before depth, recently active projects first.
+- **Nothing silently missing.** The top level is always complete, empty folders are listed, and every cut says what it left out.
+- **Folds the noise.** `frame_{001..240}.png ×240` becomes one line, and sibling folders with the same layout collapse.
+- **Workspace-aware.** In a folder of repos every project gets a line with its stack and git state (`own git repo: main, 2 uncommitted, last commit 3h ago`).
+- **Outlines.** `glint -A <file>` lists symbols with line numbers for Go, Rust, Python, JS/TS, C/C++, Java/Kotlin/C#, GDScript, shell, Lua, Ruby and Markdown.
+- **More views.** `--changed`, `--since 2h`, `-c` (last commit per entry), `-l` (exact `ls -l`-style metadata) and `-M` (disk usage as text).
 
-- startup ≈ 4 ms: no dependency with a heavy `init()` (that's why there's no Bubble Tea / lipgloss / chroma: the TUI, styling and highlighter are hand-rolled)
-- entries are `lstat`ed in parallel; git is one `git status` call per listing
-- thumbnails reuse `~/.cache/thumbnails` (Dolphin/Nautilus) and cache their own in `~/.cache/glint`
+**Token cost** on a 4,000-file Rust workspace:
 
-## Layout
+| Command | Tokens | Also tells you |
+| --- | ---: | --- |
+| `glint -A` | **~2,900** | stack, git state, changed files, line counts, what's ignored |
+| `tree -L 2` | ~13,000 | – |
+| `git ls-files` | ~50,000 | – |
+
+<details>
+<summary><b>Using glint with OpenCode, Claude Code & co.</b></summary>
+
+<br>
+
+Add a line to your agent's global instructions (e.g. `AGENTS.md`):
+
+```md
+- To explore directories, prefer `glint -A [dir]` over `ls`, `tree`, `find` or `git ls-files`.
+  `glint -A <file>` lists a file's symbols with line numbers; `glint -A -l <dir>` gives an exact ls -l style listing.
+```
+
+</details>
+
+## Configuration
+
+Everything is optional. Create a starter config with `glint --init config`. Every key is a long flag name:
+
+```toml
+# ~/.config/glint/config.toml
+theme = "midnight"
+classify = true
+hyperlink = true
+ignore = ["__pycache__", "*.pyc"]
+
+[themes.midnight]          # your own palette, based on a built-in one
+extends = "tokyonight"
+blue = "#7aa2f7"
+purple = "#bb9af7"
+```
+
+Built-in themes: `catppuccin` (default) · `tokyonight` · `gruvbox` · `nord` · `wal` (follows [pywal](https://github.com/dylanaraps/pywal)). Extra default flags can also come from `GLINT_OPTS`.
+
+<details>
+<summary><b>All flags</b></summary>
+
+<br>
+
+Run `glint --help` for the full, colorful list. Highlights:
+
+| Flag | |
+| --- | --- |
+| `-l` `-1` `-T` `-L n` | long, one per line, tree, depth |
+| `-i` · `-P` · `-M` · `-A` | browser · dashboard · disk map · agent mode |
+| `-a` `-D` `-f` `-d` `-I glob` | hidden, dirs only, files only, list dirs themselves, ignore |
+| `-s name\|size\|time\|ext` `-t` `-S` `-X` `-r` | sorting |
+| `-p` `-g` `-c` `-H` `--du` | peek, git, last commit, churn heat, folder sizes |
+| `--since 2h` `--changed` `--gitignore` | filters |
+| `--theme` `--icons` `--color` `-F` `--hyperlink` | appearance |
+| `--json` `-W` `--thumbs` `-C` | JSON, watch, thumbnails, project card |
+
+</details>
+
+## How it works
+
+<details>
+<summary><b>Design notes</b></summary>
+
+<br>
+
+- **Startup is a feature.** `ls` runs constantly, so glint avoids dependencies with expensive `init()` work. That's why there's no Bubble Tea, Lip Gloss or Chroma: the TUI, the ANSI styler and the syntax highlighter are small and hand-written.
+- **Git once per listing.** One `git status --porcelain` call, status rolled up into folders; history views stream a single `git log`.
+- **Parallel I/O.** `lstat`, line counting, previews and disk measurement run on worker pools.
+- **Thumbnails** reuse the freedesktop thumbnail cache your file manager already filled, and cache their own in `~/.cache/glint`.
+- **The agent view was tuned by agents.** Its layout was reworked over several rounds of side-by-side evaluations with different models, each run against `ls`, `tree`, `git` and `du` on real workspaces.
 
 ```
 internal/
+  agent/    glint -A: budgeted map, outlines, disk usage as text
   cli/      flags, orchestration, watch mode, shell integration, help
-  config/   config.toml + custom themes
-  fsx/      entries (parallel lstat), sorting, trees, dir sizes
-  git/      status, history (last commit / churn), tracked files
-  icons/    Nerd Font glyphs + file kinds
-  img/      decoding, resizing, half blocks, kitty protocol, thumbnail cache
+  config/   config.toml and custom themes
+  dash/     project dashboard scanner
+  fsx/      entries, parallel lstat, sorting, trees, disk usage
+  git/      status, history, tracked files
+  icons/    Nerd Font glyphs and file kinds
+  img/      decoding, half-blocks, kitty protocol, thumbnail cache
   peek/     content descriptions
-  project/  stack detection + card stats
-  render/   grid, long, tree, json, card, treemap, thumbnails
-  textw/    display width / truncation of styled text
+  project/  stack detection and card stats
+  render/   grid, long, tree, json, card, dashboard, treemap, thumbnails
+  textw/    display width of styled text
   theme/    palettes, gradients, a tiny precomputed ANSI styler
-  tui/      interactive browser, previews, syntax highlighting
+  tui/      browser, search, file actions, jumper, disk map
 ```
+
+</details>
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+[GPL-3.0-or-later](LICENSE) © Vaspyyy

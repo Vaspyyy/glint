@@ -29,7 +29,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/tui"
 )
 
-const version = "0.5.0"
+const version = "0.5.1"
 
 type options struct {
 	all                         int
@@ -667,7 +667,19 @@ func (a *app) list(w io.Writer, width int) int {
 			}
 			fmt.Fprintln(w, r.Title(d, repo)+painter.Fg(theme.Faint).Render(" · ")+
 				painter.Fg(theme.Text).Bold().Render(render.HumanSize(total))+painter.Fg(theme.Faint).Render(" on disk"))
-			height := max(8, min(a.termHeight()-12, 40))
+			// fill the window: title above; the reclaim callout and a prompt below
+			callout := 0
+			for _, g := range regens {
+				if callout == 6 || g.Size < 16<<20 { // same cut-off as render.Reclaim
+					break
+				}
+				callout++
+			}
+			below := 2
+			if callout > 0 {
+				below += 2 + callout
+			}
+			height := max(8, min(a.termHeight()-1-below, 60))
 			if !a.isTTY {
 				height = 20
 			}
