@@ -222,3 +222,17 @@ func TestJavaScriptPropertyFunctions(t *testing.T) {
 		t.Errorf("py: got %s", got)
 	}
 }
+
+// Rust impls nested in a module or function, tuple types in impl generics,
+// and JavaScript's returned named functions are definitions.
+func TestNestedImplsAndReturnedFunctions(t *testing.T) {
+	rs := "mod tests {\n    struct Gradient;\n    impl DensitySampler for Gradient {\n        fn sample(&self) -> f64 {\n            1.0\n        }\n    }\n}\n\nimpl fmt::Display for Wrap<(&Res, Ctx<'_>)> {\n    fn fmt(&self) {}\n}\n"
+	want := "mod tests 1-8; struct tests.Gradient 2-2; impl tests.DensitySampler for Gradient 3-7; fn tests.Gradient.sample 4-6; impl fmt::Display for Wrap<(&Res, Ctx<'_>)> 10-12; fn Wrap.fmt 11-11"
+	if got := spans("a.rs", rs); got != want {
+		t.Errorf("rust:\n got  %s\n want %s", got, want)
+	}
+	js := "function make(world) {\n\treturn function update(i) {\n\t\treturn i;\n\t};\n}\n"
+	if got := spans("a.js", js); got != "function make 1-5; function make.update 2-4" {
+		t.Errorf("js: got %s", got)
+	}
+}

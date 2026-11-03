@@ -127,15 +127,16 @@ var (
 		r("", `^(type) (\w+)`),
 	})
 	rustRules = prepare([]rule{
-		r("", `^\s{0,4}(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
-		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, '&]+?)(?: \{|$| where)`),
+		r("", `^\s*(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
+		// also impls nested in mod tests or a function; tuple types in the generics
+		r("impl", `^\s*impl(?:<[^>]*>)? ([\w:<>, '&()\[\]]+?)(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
 		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
 	})
 	jsRules = prepare([]rule{
 		// also nested declarations (helpers inside a factory function)
-		r("function", `^\s*(?:export )?(?:default )?(?:async )?function\*? ?(\w+)`),
+		r("function", `^\s*(?:export |return )?(?:default )?(?:async )?function\*? ?(\w+)`),
 		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
 		r("const", `^\s*(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
 		r("method", `^(?:  |    |\t)(?:public |private |protected |static |async |readonly |override |get |set )*\*?(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
