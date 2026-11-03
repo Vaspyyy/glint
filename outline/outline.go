@@ -24,11 +24,12 @@ type Symbol struct {
 }
 
 type rule struct {
-	re   *regexp.Regexp
-	kind string // "" means: take the kind from capture group 1
+	re      *regexp.Regexp
+	kind    string // "" means: take the kind from capture group 1
+	qualify bool   // group 1 (if matched) qualifies the name: a Go method's receiver type
 }
 
-func r(kind, pattern string) rule { return rule{regexp.MustCompile(pattern), kind} }
+func r(kind, pattern string) rule { return rule{re: regexp.MustCompile(pattern), kind: kind} }
 
 // how a language marks where a definition ends
 type style int
@@ -48,7 +49,7 @@ type lang struct {
 
 var (
 	goRules = []rule{
-		r("func", `^func (?:\([^)]*\) )?(\w+)`),
+		{re: regexp.MustCompile(`^func (?:\(\s*(?:\w+\s+)?\*?(\w+)(?:\[[^\]]*\])?\s*\) )?(\w+)`), kind: "func", qualify: true},
 		r("", `^(type) (\w+)`),
 	}
 	rustRules = []rule{
@@ -133,7 +134,8 @@ func Parse(name string, data []byte, limit int) []Symbol {
 	lines := splitLines(data)
 	md := lg.style == headings
 	var out []Symbol
-	inFence, inComment := false, false
+	inFence := false
+	sc := scanner{}
 	for i, line := range lines {
 		if md && strings.HasPrefix(strings.TrimSpace(line), "```") {
 			inFence = !inFence
@@ -142,7 +144,7 @@ func Parse(name string, data []byte, limit int) []Symbol {
 			continue
 		}
 		if !md && !lg.hash {
-			line, inComment = stripComments(line, inComment)
+			line = sc.stripComments(line)
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
@@ -155,6 +157,9 @@ func Parse(name string, data []byte, limit int) []Symbol {
 			kind, name := ru.kind, m[len(m)-1]
 			if kind == "" && len(m) >= 3 {
 				kind = m[1]
+			}
+			if ru.qualify && m[1] != "" {
+				name = m[1] + "." + name
 			}
 			if md {
 				kind = "h" + string(rune('0'+len(m[1])))
@@ -387,33 +392,53 @@ func (s *scanner) code(line string) []byte {
 	return out
 }
 
-// stripComments removes /* */ and // comments from a line, tracking block
-// comments across lines. String literals are not parsed; it stops prose in
-// doc comments from looking like code.
-func stripComments(line string, inBlock bool) (string, bool) {
+// stripComments returns the line without its /* */ and // comments,
+// keeping string literals as they are ("/*" in a string isn't a comment).
+func (s *scanner) stripComments(line string) string {
 	var b strings.Builder
-	for i := 0; i < len(line); {
-		if inBlock {
-			end := strings.Index(line[i:], "*/")
-			if end < 0 {
-				return b.String(), true
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case s.inBlock:
+			if strings.HasPrefix(line[i:], "*/") {
+				s.inBlock = false
+				i++
 			}
-			i += end + 2
-			inBlock = false
+			continue
+		case s.inRaw != 0:
+			if c == '\\' && s.inRaw != '`' && i+1 < len(line) {
+				b.WriteByte(c)
+				i++
+				c = line[i]
+			} else if c == s.inRaw {
+				s.inRaw = 0
+			}
+		case strings.HasPrefix(line[i:], "/*"):
+			s.inBlock = true
+			i++
+			continue
+		case strings.HasPrefix(line[i:], "//"):
+			return b.String()
+		case c == '`':
+			s.inRaw = '`'
+		case c == '"':
+			j := i + 1
+			for j < len(line) && line[j] != '"' {
+				if line[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			b.WriteString(line[i:min(j+1, len(line))])
+			i = j
 			continue
 		}
-		if strings.HasPrefix(line[i:], "/*") {
-			inBlock = true
-			i += 2
-			continue
-		}
-		if strings.HasPrefix(line[i:], "//") {
-			break
-		}
-		b.WriteByte(line[i])
-		i++
+		b.WriteByte(c)
 	}
-	return b.String(), inBlock
+	if s.inRaw == '"' {
+		s.inRaw = 0 // an unterminated "…" doesn't carry over in most languages
+	}
+	return b.String()
 }
 
 func isNoise(name string) bool {

@@ -27,7 +27,7 @@ func TestOutlineGo(t *testing.T) {
 	got := Outline(p, 10)
 	want := []Symbol{
 		{Line: 3, End: 3, Kind: "type", Name: "Repo", Sig: "type Repo struct", Parent: -1},
-		{Line: 5, End: 5, Kind: "func", Name: "Open", Sig: "func (r *Repo) Open()", Parent: -1},
+		{Line: 5, End: 5, Kind: "func", Name: "Repo.Open", Sig: "func (r *Repo) Open()", Parent: -1},
 		{Line: 7, End: 9, Kind: "func", Name: "helper", Sig: "func helper()", Parent: -1},
 	}
 	if len(got) != len(want) {

@@ -39,7 +39,7 @@ string` + "`" + `
 func helper(
 	a int,
 ) int { return a }
-`, "type ID 3-3; type Repo 5-7; func Open 9-17; func helper 19-21"},
+`, "type ID 3-3; type Repo 5-7; func Repo.Open 9-17; func helper 19-21"},
 		{"lib.rs", `
 pub struct Unit;
 
@@ -117,5 +117,20 @@ int helper(int x) {
 		if got := spans(c.name, c.src); got != c.want {
 			t.Errorf("%s:\n got  %s\n want %s", c.name, got, c.want)
 		}
+	}
+}
+
+// "/*" inside a string must not hide everything after it.
+func TestCommentMarkersInStrings(t *testing.T) {
+	src := "package a\n\nfunc a() string { return \"/*\" }\n\nfunc b() {}\n\nvar u = \"http://x\"\n\nfunc c() {}\n"
+	if got := spans("a.go", src); got != "func a 3-3; func b 5-5; func c 9-9" {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestGoMethodsCarryTheirType(t *testing.T) {
+	src := "package a\n\nfunc (t *Tree[K]) Insert(k K) {}\n\nfunc (Tests) any() bool { return true }\n\nfunc plain() {}\n"
+	if got := spans("a.go", src); got != "func Tree.Insert 3-3; func Tests.any 5-5; func plain 7-7" {
+		t.Errorf("got %s", got)
 	}
 }
