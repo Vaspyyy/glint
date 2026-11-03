@@ -1,0 +1,425 @@
+// Package outline finds the definitions in a source file (functions, types,
+// classes, Markdown headings) with cheap per-language rules, and where each
+// one ends. It is not a parser: it is enough to tell where things live and
+// which definition a changed line belongs to, and fast enough to run on
+// every file of a repository.
+package outline
+
+import (
+	"bufio"
+	"bytes"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+// Symbol is one definition.
+type Symbol struct {
+	Line   int    // first line, 1-based
+	End    int    // last line (inclusive); Line if the end isn't known
+	Kind   string // "func", "type", "class", "h2", …
+	Name   string
+	Sig    string // the defining line, trimmed: name plus signature
+	Parent int    // index of the enclosing symbol, or -1
+}
+
+type rule struct {
+	re   *regexp.Regexp
+	kind string // "" means: take the kind from capture group 1
+}
+
+func r(kind, pattern string) rule { return rule{regexp.MustCompile(pattern), kind} }
+
+// how a language marks where a definition ends
+type style int
+
+const (
+	braces   style = iota // { … }
+	indent                // the next line indented as much or less (Python, GDScript)
+	keyword               // indentation, plus a closing "end" line (Ruby, Lua)
+	headings              // the next heading of the same or a higher level
+)
+
+type lang struct {
+	rules []rule
+	style style
+	hash  bool // # starts a comment
+}
+
+var (
+	goRules = []rule{
+		r("func", `^func (?:\([^)]*\) )?(\w+)`),
+		r("", `^(type) (\w+)`),
+	}
+	rustRules = []rule{
+		r("", `^\s{0,4}(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
+		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, ]+?)(?: \{|$| where)`),
+	}
+	pyRules = []rule{
+		r("", `^(?:    )?(?:async )?(def|class) (\w+)`),
+	}
+	jsRules = []rule{
+		r("function", `^(?:export )?(?:default )?(?:async )?function\*? ?(\w+)`),
+		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
+		r("const", `^(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
+		r("method", `^  (?:public |private |protected |static |async |readonly )*(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
+	}
+	cRules = []rule{
+		r("", `^(?:typedef )?(struct|enum|union|class|namespace) (\w+)`),
+		r("define", `^#define (\w+)`),
+		// definitions start in column 0: a return type, the name, a parameter
+		// list, then either the end of the line or the opening brace
+		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:\{.*)?$`),
+		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{})]*,\s*$`),
+	}
+	javaRules = []rule{
+		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static )*(class|interface|enum|record|object) (\w+)`),
+		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
+		r("method", `^    (?:public |private |protected |static |final |synchronized |abstract )+[\w<>\[\], ]+ (\w+)\s*\(`),
+	}
+	gdRules = []rule{
+		r("", `^(func|class_name|signal|class|enum) (\w+)`),
+	}
+	shRules = []rule{
+		r("function", `^(?:function )?([\w-]+)\s*\(\)\s*\{?`),
+		r("function", `^function ([\w-]+)`),
+	}
+	luaRules = []rule{r("function", `^(?:local )?function ([\w.:]+)`)}
+	rbRules  = []rule{r("", `^\s{0,2}(def|class|module) ([\w.?!:]+)`)}
+	mdRules  = []rule{r("", `^(#{1,3}) (.+)`)}
+)
+
+var (
+	goLang   = lang{rules: goRules}
+	rustLang = lang{rules: rustRules}
+	pyLang   = lang{rules: pyRules, style: indent, hash: true}
+	jsLang   = lang{rules: jsRules}
+	cLang    = lang{rules: cRules}
+	javaLang = lang{rules: javaRules}
+	gdLang   = lang{rules: gdRules, style: indent, hash: true}
+	shLang   = lang{rules: shRules, hash: true}
+	luaLang  = lang{rules: luaRules, style: keyword}
+	rbLang   = lang{rules: rbRules, style: keyword, hash: true}
+	mdLang   = lang{rules: mdRules, style: headings}
+)
+
+var langByExt = map[string]*lang{
+	"go": &goLang, "rs": &rustLang, "py": &pyLang, "pyi": &pyLang,
+	"js": &jsLang, "mjs": &jsLang, "cjs": &jsLang, "ts": &jsLang, "tsx": &jsLang, "jsx": &jsLang, "mts": &jsLang,
+	"svelte": &jsLang, "vue": &jsLang,
+	"c": &cLang, "h": &cLang, "cc": &cLang, "cpp": &cLang, "cxx": &cLang, "hpp": &cLang, "hh": &cLang,
+	"java": &javaLang, "kt": &javaLang, "kts": &javaLang, "cs": &javaLang, "scala": &javaLang,
+	"gd": &gdLang, "sh": &shLang, "bash": &shLang, "zsh": &shLang,
+	"lua": &luaLang, "rb": &rbLang, "md": &mdLang, "markdown": &mdLang,
+}
+
+func langOf(name string) *lang {
+	return langByExt[strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))]
+}
+
+// Supported reports whether the file type has outline rules.
+func Supported(name string) bool { return langOf(name) != nil }
+
+// MaxSize is the largest file Parse looks at.
+const MaxSize = 4 << 20
+
+// Parse returns the symbols of a file's contents (at most limit), with
+// their ends and parents. name only selects the language.
+func Parse(name string, data []byte, limit int) []Symbol {
+	lg := langOf(name)
+	if lg == nil || len(data) > MaxSize || bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+		return nil
+	}
+	lines := splitLines(data)
+	md := lg.style == headings
+	var out []Symbol
+	inFence, inComment := false, false
+	for i, line := range lines {
+		if md && strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+		}
+		if inFence {
+			continue
+		}
+		if !md && !lg.hash {
+			line, inComment = stripComments(line, inComment)
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+		}
+		for _, ru := range lg.rules {
+			m := ru.re.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			kind, name := ru.kind, m[len(m)-1]
+			if kind == "" && len(m) >= 3 {
+				kind = m[1]
+			}
+			if md {
+				kind = "h" + string(rune('0'+len(m[1])))
+			}
+			if isNoise(name) {
+				break
+			}
+			sig := strings.TrimSpace(line)
+			if i := strings.IndexByte(sig, '{'); i > 0 && !md {
+				sig = strings.TrimSpace(sig[:i]) // signature only, not a one-line body
+			}
+			if r := []rune(sig); len(r) > 110 {
+				sig = string(r[:109]) + "…"
+			}
+			out = append(out, Symbol{Line: i + 1, End: i + 1, Kind: kind, Name: strings.TrimSpace(name), Sig: sig, Parent: -1})
+			break
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	findEnds(lg, lines, out)
+	findParents(out)
+	return out
+}
+
+func splitLines(data []byte) []string {
+	var lines []string
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 64<<10), MaxSize+1)
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	return lines
+}
+
+func findEnds(lg *lang, lines []string, syms []Symbol) {
+	for k := range syms {
+		s := &syms[k]
+		switch lg.style {
+		case braces:
+			// stop looking for the opening brace at the next definition
+			limit := len(lines)
+			if k+1 < len(syms) {
+				limit = syms[k+1].Line - 1
+			}
+			s.End = braceEnd(lines, s.Line-1, limit, lg.hash, s.Kind == "define")
+		case indent, keyword:
+			s.End = indentEnd(lines, s.Line-1, lg.style == keyword)
+		case headings:
+			s.End = len(lines)
+			for j := k + 1; j < len(syms); j++ {
+				if syms[j].Kind <= s.Kind { // "h1" < "h2": same or higher level
+					s.End = syms[j].Line - 1
+					break
+				}
+			}
+		}
+		if s.End < s.Line {
+			s.End = s.Line
+		}
+	}
+}
+
+// braceEnd returns the 1-based line of the brace that closes the block
+// opened on or after line start (0-based). A declaration without a block
+// (`type ID int`, `fn f();`) ends on its own line.
+func braceEnd(lines []string, start, limit int, hash, define bool) int {
+	if define { // #define with continuation lines
+		j := start
+		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
+			j++
+		}
+		return j + 1
+	}
+	sc := scanner{hash: hash}
+	depth, opened := 0, false
+	for j := start; j < len(lines); j++ {
+		if !opened && j >= limit && j > start {
+			return start + 1
+		}
+		for _, c := range sc.code(lines[j]) {
+			switch c {
+			case '{':
+				depth++
+				opened = true
+			case '}':
+				depth--
+				if opened && depth == 0 {
+					return j + 1
+				}
+			case ';':
+				if !opened && depth == 0 {
+					return j + 1
+				}
+			}
+		}
+		if !opened && j-start > 30 {
+			return start + 1
+		}
+	}
+	if opened {
+		return len(lines)
+	}
+	return start + 1
+}
+
+// indentEnd: the block ends before the next non-blank line that is
+// indented as much as the definition or less (decorators and comments at
+// that level belong to what follows). With endKeyword, a closing "end"
+// line at the definition's level is part of it.
+func indentEnd(lines []string, start int, endKeyword bool) int {
+	base := indentOf(lines[start])
+	last := start
+	open := strings.Count(lines[start], "(") - strings.Count(lines[start], ")")
+	for j := start + 1; j < len(lines); j++ {
+		t := strings.TrimSpace(lines[j])
+		if t == "" {
+			continue
+		}
+		if open > 0 { // a signature spread over several lines
+			open += strings.Count(lines[j], "(") - strings.Count(lines[j], ")")
+			last = j
+			continue
+		}
+		if indentOf(lines[j]) <= base {
+			if endKeyword && (t == "end" || strings.HasPrefix(t, "end ") || strings.HasPrefix(t, "end)") || strings.HasPrefix(t, "end,")) {
+				return j + 1
+			}
+			break
+		}
+		last = j
+	}
+	return last + 1
+}
+
+func indentOf(l string) int {
+	n := 0
+	for _, c := range l {
+		switch c {
+		case ' ':
+			n++
+		case '\t':
+			n += 4
+		default:
+			return n
+		}
+	}
+	return n
+}
+
+// findParents sets each symbol's Parent to the innermost symbol whose
+// lines contain it.
+func findParents(syms []Symbol) {
+	for i := range syms {
+		for j := i - 1; j >= 0; j-- {
+			if syms[j].Line < syms[i].Line && syms[j].End >= syms[i].End && syms[j].End > syms[j].Line {
+				syms[i].Parent = j
+				break
+			}
+		}
+	}
+}
+
+// Qualified is the symbol's name with its parents' names: "Repo.Open".
+func Qualified(syms []Symbol, i int) string {
+	name := syms[i].Name
+	for p := syms[i].Parent; p >= 0; p = syms[p].Parent {
+		if syms[p].Kind == "h1" || syms[p].Kind == "h2" || syms[p].Kind == "h3" {
+			break // headings nest, but "Install.Linux" isn't a name anyone uses
+		}
+		name = syms[p].Name + "." + name
+	}
+	return name
+}
+
+// scanner returns the code of a line with strings, character literals and
+// comments blanked out, carrying multi-line strings and block comments over
+// to the next line. Good enough to count braces.
+type scanner struct {
+	hash    bool
+	inBlock bool // /* … */
+	inRaw   byte // ` or " for a string that continues on the next line
+}
+
+func (s *scanner) code(line string) []byte {
+	out := make([]byte, 0, len(line))
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case s.inBlock:
+			if strings.HasPrefix(line[i:], "*/") {
+				s.inBlock = false
+				i++
+			}
+		case s.inRaw != 0:
+			if c == '\\' && s.inRaw != '`' {
+				i++
+			} else if c == s.inRaw {
+				s.inRaw = 0
+			}
+		case strings.HasPrefix(line[i:], "/*") && !s.hash:
+			s.inBlock = true
+			i++
+		case strings.HasPrefix(line[i:], "//") && !s.hash, c == '#' && s.hash && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return out
+		case c == '`':
+			s.inRaw = '`'
+		case c == '"':
+			j := i + 1
+			for j < len(line) && line[j] != '"' {
+				if line[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			if j >= len(line) {
+				s.inRaw = '"' // continues on the next line (rare outside raw strings)
+			}
+			i = j
+		case c == '\'':
+			// a character literal ('x', '\n', '{'), not a Rust lifetime ('a)
+			if j := strings.IndexByte(line[i+1:min(len(line), i+5)], '\''); j >= 0 {
+				i += j + 1
+			}
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stripComments removes /* */ and // comments from a line, tracking block
+// comments across lines. String literals are not parsed; it stops prose in
+// doc comments from looking like code.
+func stripComments(line string, inBlock bool) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(line); {
+		if inBlock {
+			end := strings.Index(line[i:], "*/")
+			if end < 0 {
+				return b.String(), true
+			}
+			i += end + 2
+			inBlock = false
+			continue
+		}
+		if strings.HasPrefix(line[i:], "/*") {
+			inBlock = true
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(line[i:], "//") {
+			break
+		}
+		b.WriteByte(line[i])
+		i++
+	}
+	return b.String(), inBlock
+}
+
+func isNoise(name string) bool {
+	switch name {
+	case "if", "for", "while", "switch", "return", "else", "sizeof", "catch", "main_", "do", "case", "":
+		return true
+	}
+	return false
+}

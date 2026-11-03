@@ -25,7 +25,11 @@ func TestOutlineGo(t *testing.T) {
 	p := filepath.Join(dir, "x.go")
 	write(t, p, "package x\n\ntype Repo struct{}\n\nfunc (r *Repo) Open() {}\n\nfunc helper() {\n\tif true {}\n}\n")
 	got := Outline(p, 10)
-	want := []Symbol{{3, "type", "Repo", "type Repo struct"}, {5, "func", "Open", "func (r *Repo) Open()"}, {7, "func", "helper", "func helper()"}}
+	want := []Symbol{
+		{Line: 3, End: 3, Kind: "type", Name: "Repo", Sig: "type Repo struct", Parent: -1},
+		{Line: 5, End: 5, Kind: "func", Name: "Open", Sig: "func (r *Repo) Open()", Parent: -1},
+		{Line: 7, End: 9, Kind: "func", Name: "helper", Sig: "func helper()", Parent: -1},
+	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v", got)
 	}
