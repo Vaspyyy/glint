@@ -178,3 +178,16 @@ func TestJavaScriptNestedDefinitions(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
+
+// Braces in a parameter list (destructuring, an inline struct type) don't
+// open the body.
+func TestBracesInParameters(t *testing.T) {
+	js := "export function build({\n\tmask,\n\tscratch = {},\n}) {\n\tconst a = 1;\n\treturn a;\n}\n\nfunction next() {}\n"
+	if got := spans("a.js", js); got != "function build 1-7; function next 9-9" {
+		t.Errorf("js: got %s", got)
+	}
+	g := "package a\n\nfunc f(x struct{ a int }) int {\n\treturn x.a\n}\n\nfunc g() {}\n"
+	if got := spans("a.go", g); got != "func f 3-5; func g 7-7" {
+		t.Errorf("go: got %s", got)
+	}
+}

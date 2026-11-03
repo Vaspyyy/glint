@@ -314,13 +314,24 @@ func braceEnd(lines []string, start, limit int, lg *lang, define bool) int {
 		return j + 1
 	}
 	sc := scanner{hash: lg.hash, js: lg.js, multi: lg.multi}
-	depth, opened := 0, false
+	depth, opened, parens := 0, false, 0
 	for j := start; j < len(lines); j++ {
 		if !opened && j >= limit && j > start {
 			return start + 1
 		}
 		for _, c := range sc.code(lines[j]) {
+			if !opened && parens > 0 && c != '(' && c != ')' {
+				continue // braces in the parameters ({ a, b } = opts, struct{ x int }) aren't the body
+			}
 			switch c {
+			case '(':
+				if !opened {
+					parens++
+				}
+			case ')':
+				if !opened {
+					parens--
+				}
 			case '{':
 				depth++
 				opened = true
