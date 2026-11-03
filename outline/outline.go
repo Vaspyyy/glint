@@ -45,6 +45,8 @@ type lang struct {
 	rules []rule
 	style style
 	hash  bool // # starts a comment
+	js    bool // '…' are strings and /…/ can be a regex literal
+	multi bool // "…" may continue on the next line (Rust)
 }
 
 var (
@@ -92,9 +94,9 @@ var (
 
 var (
 	goLang   = lang{rules: goRules}
-	rustLang = lang{rules: rustRules}
+	rustLang = lang{rules: rustRules, multi: true}
 	pyLang   = lang{rules: pyRules, style: indent, hash: true}
-	jsLang   = lang{rules: jsRules}
+	jsLang   = lang{rules: jsRules, js: true}
 	cLang    = lang{rules: cRules}
 	javaLang = lang{rules: javaRules}
 	gdLang   = lang{rules: gdRules, style: indent, hash: true}
@@ -206,7 +208,7 @@ func findEnds(lg *lang, lines []string, syms []Symbol) {
 			if k+1 < len(syms) {
 				limit = syms[k+1].Line - 1
 			}
-			s.End = braceEnd(lines, s.Line-1, limit, lg.hash, s.Kind == "define")
+			s.End = braceEnd(lines, s.Line-1, limit, lg, s.Kind == "define")
 		case indent, keyword:
 			s.End = indentEnd(lines, s.Line-1, lg.style == keyword)
 		case headings:
@@ -227,7 +229,7 @@ func findEnds(lg *lang, lines []string, syms []Symbol) {
 // braceEnd returns the 1-based line of the brace that closes the block
 // opened on or after line start (0-based). A declaration without a block
 // (`type ID int`, `fn f();`) ends on its own line.
-func braceEnd(lines []string, start, limit int, hash, define bool) int {
+func braceEnd(lines []string, start, limit int, lg *lang, define bool) int {
 	if define { // #define with continuation lines
 		j := start
 		for j+1 < len(lines) && strings.HasSuffix(strings.TrimRight(lines[j], " \t"), "\\") {
@@ -235,7 +237,7 @@ func braceEnd(lines []string, start, limit int, hash, define bool) int {
 		}
 		return j + 1
 	}
-	sc := scanner{hash: hash}
+	sc := scanner{hash: lg.hash, js: lg.js, multi: lg.multi}
 	depth, opened := 0, false
 	for j := start; j < len(lines); j++ {
 		if !opened && j >= limit && j > start {
@@ -347,6 +349,8 @@ func Qualified(syms []Symbol, i int) string {
 // to the next line. Good enough to count braces.
 type scanner struct {
 	hash    bool
+	js      bool // JavaScript: '…' strings and /…/ regex literals
+	multi   bool // "…" may span lines
 	inBlock bool // /* … */
 	inRaw   byte // ` or " for a string that continues on the next line
 }
@@ -374,18 +378,37 @@ func (s *scanner) code(line string) []byte {
 			return out
 		case c == '`':
 			s.inRaw = '`'
-		case c == '"':
+		case c == '"' || c == '\'' && s.js:
 			j := i + 1
-			for j < len(line) && line[j] != '"' {
+			for j < len(line) && line[j] != c {
 				if line[j] == '\\' {
 					j++
 				}
 				j++
 			}
-			if j >= len(line) {
-				s.inRaw = '"' // continues on the next line (rare outside raw strings)
+			if j >= len(line) && (s.multi || strings.HasSuffix(line, "\\")) {
+				s.inRaw = c // continues on the next line: Rust, or after a backslash
 			}
 			i = j
+		case c == '/' && s.js && regexStart(out):
+			// a regex literal: up to the closing slash outside a [class]
+			j, class := i+1, false
+			for ; j < len(line); j++ {
+				if line[j] == '\\' {
+					j++
+				} else if line[j] == '[' {
+					class = true
+				} else if line[j] == ']' {
+					class = false
+				} else if line[j] == '/' && !class {
+					break
+				}
+			}
+			if j >= len(line) {
+				out = append(out, c) // no closing slash: a division after all
+			} else {
+				i = j
+			}
 		case c == '\'':
 			// a character literal ('x', '\n', '{'), not a Rust lifetime ('a)
 			if j := strings.IndexByte(line[i+1:min(len(line), i+5)], '\''); j >= 0 {
@@ -396,6 +419,28 @@ func (s *scanner) code(line string) []byte {
 		}
 	}
 	return out
+}
+
+// regexStart: a slash after this code starts a regex literal, not a
+// division (it follows an operator, an opening bracket, or nothing).
+func regexStart(code []byte) bool {
+	t := strings.TrimRight(string(code), " \t")
+	if t == "" {
+		return true
+	}
+	if strings.ContainsRune("(,=:[!&|?{};+-*%<>~^", rune(t[len(t)-1])) {
+		return true
+	}
+	for _, kw := range []string{"return", "typeof", "case", "in", "of", "delete", "void", "yield", "await"} {
+		if strings.HasSuffix(t, kw) && (len(t) == len(kw) || !isIdent(t[len(t)-len(kw)-1])) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIdent(c byte) bool {
+	return c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // stripComments returns the line without its /* */ and // comments,

@@ -138,3 +138,33 @@ func TestGoMethodsCarryTheirType(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+// Quotes inside JavaScript regex literals and single-quoted strings with
+// braces must not throw off where functions end; a division is no regex.
+func TestJavaScriptRegexAndQuotes(t *testing.T) {
+	src := `export function escapeHtml(s) {
+	return String(s)
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
+function half(total, n) {
+	const x = total / 2, y = n / 4;
+	return x / y;
+}
+
+function tag() {
+	return '<div class="{x}">' + '}';
+}
+
+function after() {}
+`
+	want := "function escapeHtml 1-5; function half 7-10; function tag 12-14; function after 16-16"
+	if got := spans("a.js", src); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	// an unclosed "…" ends with its line outside Rust
+	if got := spans("a.c", "int a(void) {\n\tputs(\"x);\n}\n\nint b(void) {\n\treturn 1;\n}\n"); got != "func a 1-3; func b 5-7" {
+		t.Errorf("got %s", got)
+	}
+}
