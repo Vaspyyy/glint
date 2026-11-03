@@ -131,7 +131,7 @@ var (
 		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, '&]+?)(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
-		r("", `^(?:    )?(?:async )?(def|class) (\w+)`),
+		r("", `^\s*(?:async )?(def|class) (\w+)`), // also nested helpers and classes
 	})
 	jsRules = prepare([]rule{
 		// also nested declarations (helpers inside a factory function)

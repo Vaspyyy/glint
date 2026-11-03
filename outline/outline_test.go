@@ -200,3 +200,12 @@ func TestRustImplWithLifetimes(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
+
+// Nested Python functions and classes are definitions too.
+func TestPythonNested(t *testing.T) {
+	src := "class Window:\n    def __init__(self):\n        def make():\n            return 1\n        self.x = make()\n\n    def show(self):\n        pass\n"
+	want := "class Window 1-8; def Window.__init__ 2-5; def Window.__init__.make 3-4; def Window.show 7-8"
+	if got := spans("a.py", src); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
