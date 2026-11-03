@@ -331,7 +331,13 @@ func Qualified(syms []Symbol, i int) string {
 		if syms[p].Kind == "h1" || syms[p].Kind == "h2" || syms[p].Kind == "h3" {
 			break // headings nest, but "Install.Linux" isn't a name anyone uses
 		}
-		name = syms[p].Name + "." + name
+		parent := syms[p].Name
+		if syms[p].Kind == "impl" { // "impl Shape for Circle": the methods are Circle's
+			if _, typ, ok := strings.Cut(parent, " for "); ok {
+				parent = typ
+			}
+		}
+		name = parent + "." + name
 	}
 	return name
 }

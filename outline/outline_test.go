@@ -53,7 +53,11 @@ impl Repo {
 pub trait T {
     fn f();
 }
-`, "struct Unit 1-1; impl Repo 3-8; fn Repo.open 4-7; trait T 10-12; fn T.f 11-11"},
+
+impl T for Unit {
+    fn f() {}
+}
+`, "struct Unit 1-1; impl Repo 3-8; fn Repo.open 4-7; trait T 10-12; fn T.f 11-11; impl T for Unit 14-16; fn Unit.f 15-15"},
 		{"m.py", `
 import os
 
