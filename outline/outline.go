@@ -62,10 +62,11 @@ var (
 		r("", `^(?:    )?(?:async )?(def|class) (\w+)`),
 	}
 	jsRules = []rule{
-		r("function", `^(?:export )?(?:default )?(?:async )?function\*? ?(\w+)`),
+		// also nested declarations (helpers inside a factory function)
+		r("function", `^\s*(?:export )?(?:default )?(?:async )?function\*? ?(\w+)`),
 		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
-		r("const", `^(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
-		r("method", `^  (?:public |private |protected |static |async |readonly )*(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
+		r("const", `^\s*(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
+		r("method", `^(?:  |    |\t)(?:public |private |protected |static |async |readonly |override |get |set )*\*?(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
 	}
 	cRules = []rule{
 		r("", `^(?:typedef )?(struct|enum|union|class|namespace) (\w+)`),

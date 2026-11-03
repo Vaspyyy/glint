@@ -168,3 +168,13 @@ function after() {}
 		t.Errorf("got %s", got)
 	}
 }
+
+// Helpers nested in a factory function and tab-indented class methods are
+// definitions too.
+func TestJavaScriptNestedDefinitions(t *testing.T) {
+	src := "export function createMenu(runtime) {\n\tfunction bindPause() {\n\t\trun();\n\t}\n\tconst onKey = (e) => {\n\t\trun(e);\n\t};\n\treturn { bindPause };\n}\n\nclass View {\n\trender() {\n\t\treturn 1;\n\t}\n\tget size() {\n\t\treturn 2;\n\t}\n}\n"
+	want := "function createMenu 1-9; function createMenu.bindPause 2-4; const createMenu.onKey 5-7; class View 11-18; method View.render 12-14; method View.size 15-17"
+	if got := spans("a.js", src); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
