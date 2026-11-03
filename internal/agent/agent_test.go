@@ -220,3 +220,14 @@ func TestExtKey(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeSummary(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "README.md"), "<div align=\"center\">\n\n# demo\n\n[![CI](https://x/badge.svg)](https://x)\n\nA **tiny** tool for [counting](https://example.com) things.\nIt is fast.\n\n## Install\n\nmore text\n")
+	if got := readmeSummary(dir); got != "A tiny tool for counting things. It is fast." {
+		t.Errorf("got %q", got)
+	}
+	if got := readmeSummary(t.TempDir()); got != "" {
+		t.Errorf("no README should give no summary, got %q", got)
+	}
+}

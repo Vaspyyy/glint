@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1476,6 +1477,11 @@ func listDir(w io.Writer, dir string, opt Options) {
 		head += " — " + strings.Join(facts, " · ")
 	}
 	fmt.Fprintln(w, head)
+	if opt.Since == 0 && !opt.Changed && (s.repo != nil || projectOf(root) != nil) {
+		if about := readmeSummary(s.rootAbs); about != "" {
+			fmt.Fprintln(w, "about: "+about)
+		}
+	}
 	if s.note != "" {
 		fmt.Fprintln(w, "note: "+s.note)
 	}
@@ -1563,6 +1569,69 @@ func listDir(w io.Writer, dir string, opt Options) {
 	if collapsed > 0 {
 		fmt.Fprintf(w, "\n%d dirs not expanded (budget %d lines; the top level is always listed in full); `glint -A <dir>` opens one.\n", collapsed, opt.Budget)
 	}
+}
+
+var (
+	mdLinkRe  = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	mdTagRe   = regexp.MustCompile(`<[^>]+>`)
+	mdEmphRe  = regexp.MustCompile(`(\*\*|__|\*|_)([^*_\s][^*_]*?)(\*\*|__|\*|_)`)
+	mdSkipRe  = regexp.MustCompile(`^(#|<|\[!\[|!\[|\x60\x60\x60|---|===|\||>|\[.*\]:|\s*[-*+] )`)
+	readmeRes = []string{"README.md", "readme.md", "Readme.md", "README", "README.rst", "README.txt", "README.markdown"}
+)
+
+// readmeSummary returns the first prose paragraph of the README, so an
+// agent learns what a project is without reading the file.
+func readmeSummary(dir string) string {
+	var data []byte
+	for _, name := range readmeRes {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			data = b[:min(len(b), 16<<10)]
+			break
+		}
+	}
+	if data == nil {
+		return ""
+	}
+	var para []string
+	inFence := false
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "\x60\x60\x60") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if t == "" {
+			if len(para) > 0 {
+				break
+			}
+			continue
+		}
+		if mdSkipRe.MatchString(t) {
+			if len(para) > 0 {
+				break
+			}
+			continue
+		}
+		para = append(para, t)
+	}
+	text := strings.Join(para, " ")
+	text = mdLinkRe.ReplaceAllString(text, "$1")
+	text = mdTagRe.ReplaceAllString(text, "")
+	text = mdEmphRe.ReplaceAllString(text, "$2")
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > 220 {
+		cut := string(r[:220])
+		if i := strings.LastIndexAny(cut, ".!?"); i > 80 {
+			cut = cut[:i+1]
+		} else if i := strings.LastIndex(cut, " "); i > 0 {
+			cut = cut[:i] + "…"
+		}
+		text = cut
+	}
+	return text
 }
 
 var sourceExts = map[string]bool{}
