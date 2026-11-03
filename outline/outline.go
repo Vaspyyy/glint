@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"strings"
 )
 
@@ -27,9 +28,80 @@ type rule struct {
 	re      *regexp.Regexp
 	kind    string // "" means: take the kind from capture group 1
 	qualify bool   // group 1 (if matched) qualifies the name: a Go method's receiver type
+	need    []string
 }
 
 func r(kind, pattern string) rule { return rule{re: regexp.MustCompile(pattern), kind: kind} }
+
+// prepare works out the literals a rule's matches contain (one of them),
+// so that lines without any skip the regex.
+func prepare(rules []rule) []rule {
+	for i := range rules {
+		if sre, err := syntax.Parse(rules[i].re.String(), syntax.Perl); err == nil {
+			rules[i].need = required(sre.Simplify())
+		}
+	}
+	return rules
+}
+
+// required returns literals one of which every match of re contains, or
+// nil if there is no such set.
+func required(re *syntax.Regexp) []string {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if re.Flags&syntax.FoldCase != 0 {
+			return nil
+		}
+		return []string{string(re.Rune)}
+	case syntax.OpCapture, syntax.OpPlus:
+		return required(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return required(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		var best []string
+		for _, s := range re.Sub {
+			if r := required(s); r != nil && (best == nil || shortest(r) > shortest(best)) {
+				best = r
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		var all []string
+		for _, s := range re.Sub {
+			r := required(s)
+			if r == nil {
+				return nil
+			}
+			all = append(all, r...)
+		}
+		return all
+	}
+	return nil
+}
+
+func shortest(lits []string) int {
+	n := -1
+	for _, l := range lits {
+		if n < 0 || len(l) < n {
+			n = len(l)
+		}
+	}
+	return n
+}
+
+func (ru *rule) mayMatch(line string) bool {
+	if ru.need == nil {
+		return true
+	}
+	for _, l := range ru.need {
+		if strings.Contains(line, l) {
+			return true
+		}
+	}
+	return false
+}
 
 // how a language marks where a definition ends
 type style int
@@ -50,47 +122,47 @@ type lang struct {
 }
 
 var (
-	goRules = []rule{
+	goRules = prepare([]rule{
 		{re: regexp.MustCompile(`^func (?:\(\s*(?:\w+\s+)?\*?(\w+)(?:\[[^\]]*\])?\s*\) )?(\w+)`), kind: "func", qualify: true},
 		r("", `^(type) (\w+)`),
-	}
-	rustRules = []rule{
+	})
+	rustRules = prepare([]rule{
 		r("", `^\s{0,4}(?:pub(?:\([^)]*\))? )?(?:async )?(?:unsafe )?(?:const )?(fn|struct|enum|trait|mod|type|union|static|macro_rules!) (\w+)`),
 		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, ]+?)(?: \{|$| where)`),
-	}
-	pyRules = []rule{
+	})
+	pyRules = prepare([]rule{
 		r("", `^(?:    )?(?:async )?(def|class) (\w+)`),
-	}
-	jsRules = []rule{
+	})
+	jsRules = prepare([]rule{
 		// also nested declarations (helpers inside a factory function)
 		r("function", `^\s*(?:export )?(?:default )?(?:async )?function\*? ?(\w+)`),
 		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
 		r("const", `^\s*(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
 		r("method", `^(?:  |    |\t)(?:public |private |protected |static |async |readonly |override |get |set )*\*?(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
-	}
-	cRules = []rule{
+	})
+	cRules = prepare([]rule{
 		r("", `^(?:typedef )?(struct|enum|union|class|namespace) (\w+)`),
 		r("define", `^#define (\w+)`),
 		// definitions start in column 0: a return type, the name, a parameter
 		// list, then either the end of the line or the opening brace
 		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:\{.*)?$`),
 		r("func", `^(?:[A-Za-z_][\w:<>,]*[\s*&]+)+([A-Za-z_][\w:~]*)\s*\([^;{})]*,\s*$`),
-	}
-	javaRules = []rule{
+	})
+	javaRules = prepare([]rule{
 		r("", `^\s{0,4}(?:public |private |protected |internal |abstract |final |sealed |data |open |static )*(class|interface|enum|record|object) (\w+)`),
 		r("fun", `^\s{0,4}(?:public |private |protected |internal |override |suspend |inline |open )*fun (?:<[^>]*> )?(?:\w+\.)?(\w+)`),
 		r("method", `^    (?:public |private |protected |static |final |synchronized |abstract )+[\w<>\[\], ]+ (\w+)\s*\(`),
-	}
-	gdRules = []rule{
+	})
+	gdRules = prepare([]rule{
 		r("", `^(func|class_name|signal|class|enum) (\w+)`),
-	}
-	shRules = []rule{
+	})
+	shRules = prepare([]rule{
 		r("function", `^(?:function )?([\w-]+)\s*\(\)\s*\{?`),
 		r("function", `^function ([\w-]+)`),
-	}
-	luaRules = []rule{r("function", `^(?:local )?function ([\w.:]+)`)}
-	rbRules  = []rule{r("", `^\s{0,2}(def|class|module) ([\w.?!:]+)`)}
-	mdRules  = []rule{r("", `^(#{1,3}) (.+)`)}
+	})
+	luaRules = prepare([]rule{r("function", `^(?:local )?function ([\w.:]+)`)})
+	rbRules  = prepare([]rule{r("", `^\s{0,2}(def|class|module) ([\w.?!:]+)`)})
+	mdRules  = prepare([]rule{r("", `^(#{1,3}) (.+)`)})
 )
 
 var (
@@ -153,6 +225,9 @@ func Parse(name string, data []byte, limit int) []Symbol {
 			}
 		}
 		for _, ru := range lg.rules {
+			if !ru.mayMatch(line) {
+				continue
+			}
 			m := ru.re.FindStringSubmatch(line)
 			if m == nil {
 				continue
