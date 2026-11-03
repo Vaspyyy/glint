@@ -205,6 +205,12 @@ func Run(args []string) int {
 		return die(err)
 	}
 	o := &a.o
+	// a bare `glint [paths]` with stdout piped is almost always an agent or a script
+	// that wants facts, not an ls clone; GLINT_PLAIN=1 keeps the plain listing
+	if !o.agentMode && a.flags.NFlag() == 0 && os.Getenv("GLINT_PLAIN") == "" &&
+		!term.IsTerminal(int(os.Stdout.Fd())) {
+		o.agentMode = true
+	}
 	if o.agentMode {
 		return a.agent()
 	}
