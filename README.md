@@ -24,12 +24,12 @@ One static binary, starts in ~4 ms.
 
 `ls` tells you *names*. glint tells you **what you're looking at**:
 
-- 🎨 **Beautiful by default.** Nerd Font icons for 190+ file types and names, colored permissions, sizes that heat up as they grow, relative times that fade with age. Five built-in themes, or [your own](#configuration).
-- 🌿 **Git-aware everywhere.** Per-file status, folder rollups, branch / ahead / behind in the header, last commit and churn per file.
-- 🔍 **An interactive browser** with syntax-highlighted previews, **content search**, file actions, a project jumper and a mouse-driven **disk map**.
-- 📊 **A dashboard for your projects folder**: every repo's stack, branch, uncommitted work, last commit and 12 weeks of activity on one screen.
-- 🤖 **Built for coding agents too.** `glint -A` answers *"what is this project, where's the code, what changed?"* in one call, at a fraction of the tokens of `tree`.
-- ⚡ **Fast.** Parallel `lstat`, one `git status` per listing, no heavy dependencies: the TUI, styling and highlighter are hand-rolled to keep startup at ~4 ms.
+- **Beautiful by default.** Nerd Font icons for 190+ file types and names, colored permissions, sizes that heat up as they grow, relative times that fade with age. Five built-in themes, or [your own](#configuration).
+- **Git-aware everywhere.** Per-file status, folder rollups, branch / ahead / behind in the header, last commit and churn per file.
+- **An interactive browser** with syntax-highlighted previews, **content search**, file actions, a project jumper and a mouse-driven **disk map**.
+- **A dashboard for your projects folder**: every repo's stack, branch, uncommitted work, last commit and 12 weeks of activity on one screen.
+- **Built for coding agents too.** `glint -A` answers *"what is this project, where's the code, what changed?"* in one call, at a fraction of the tokens of `tree`.
+- **Fast.** Parallel `lstat`, one `git status` per listing, no heavy dependencies: the TUI, styling and highlighter are hand-rolled to keep startup at ~4 ms.
 
 ## Install
 
