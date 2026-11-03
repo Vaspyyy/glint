@@ -209,3 +209,16 @@ func TestPythonNested(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
+
+// Functions assigned to properties and block-bodied arrow functions in
+// object literals are definitions; a type annotation is not.
+func TestJavaScriptPropertyFunctions(t *testing.T) {
+	src := "function start() {\n\t_worker.onmessage = (evt) => {\n\t\thandle(evt);\n\t};\n\treturn {\n\t\tset: (v) => {\n\t\t\tx = v;\n\t\t},\n\t\tget: () => x,\n\t};\n}\n\ninterface Props {\n  onClick: (e: Event) => void;\n}\n"
+	want := "function start 1-11; function start._worker.onmessage 2-4; method start.set 6-8; interface Props 13-15"
+	if got := spans("a.ts", src); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	if got := spans("a.py", "def über_limit():\n    return 1\n"); got != "def über_limit 1-2" {
+		t.Errorf("py: got %s", got)
+	}
+}

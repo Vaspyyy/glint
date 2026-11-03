@@ -131,7 +131,7 @@ var (
 		r("impl", `^impl(?:<[^>]*>)? ([\w:<>, '&]+?)(?: \{|$| where)`),
 	})
 	pyRules = prepare([]rule{
-		r("", `^\s*(?:async )?(def|class) (\w+)`), // also nested helpers and classes
+		r("", `^\s*(?:async )?(def|class) ([\p{L}_][\p{L}\p{N}_]*)`), // also nested helpers and classes
 	})
 	jsRules = prepare([]rule{
 		// also nested declarations (helpers inside a factory function)
@@ -139,6 +139,10 @@ var (
 		r("", `^(?:export )?(?:default )?(?:abstract )?(class|interface|enum|type) (\w+)`),
 		r("const", `^\s*(?:export )?(?:const|let|var) (\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>`),
 		r("method", `^(?:  |    |\t)(?:public |private |protected |static |async |readonly |override |get |set )*\*?(\w+)\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$`),
+		// a function assigned to a property (worker.onmessage = (e) => {…}), and
+		// an arrow function with a block body as an object property (set: (v) => {)
+		r("function", `^\s*((?:[\w$]+\.)+[\w$]+)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)`),
+		r("method", `^\s+([\w$]+)\s*:\s*(?:async\s+)?(?:function\s*\([^)]*\)|\([^)]*\)\s*=>|[\w$]+\s*=>)\s*\{\s*$`),
 	})
 	cRules = prepare([]rule{
 		r("", `^(?:typedef )?(struct|enum|union|class|namespace) (\w+)`),
