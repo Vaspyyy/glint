@@ -29,7 +29,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/tui"
 )
 
-const version = "0.6.0"
+const version = "0.6.1"
 
 type options struct {
 	all                         int
