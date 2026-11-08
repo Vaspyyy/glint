@@ -1,7 +1,7 @@
 github.com/BurntSushi/toml v1.5.0 h1:W5quZX/G/csjUnuI8SUYlsHs9M38FC7znL0lIO+DvMg=
 github.com/BurntSushi/toml v1.5.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/Vaspyyy/prism v0.2.1 h1:+6X36WZV3tK2U+OWQabSDFKvm6+ALfB3COzSlBxf9qM=
-github.com/Vaspyyy/prism v0.2.1/go.mod h1:mmkgzTDxMoMCkPO1koVJ+sn07P51wIqtnueSPOz9QMU=
+github.com/Vaspyyy/prism v0.3.0 h1:nRTyA77NgtXX2sufPJNFeVGJkVM66fYaRTe6JssdmsY=
+github.com/Vaspyyy/prism v0.3.0/go.mod h1:mmkgzTDxMoMCkPO1koVJ+sn07P51wIqtnueSPOz9QMU=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=

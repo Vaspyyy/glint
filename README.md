@@ -45,7 +45,7 @@ Plain `glint` prints a grid. The other views:
 | `glint -C` | A summary card for a project: stack, branch, languages, lines of code, TODOs |
 | `glint --thumbs` | Image thumbnails, using the kitty graphics protocol or half-block characters |
 | `glint -W` | Keeps the listing open and updates it as files change |
-| `glint --json` | Machine-readable output |
+| `glint --json` | One JSON document for scripts and agents (see [JSON](#json)) |
 
 The usual filters work with every view: `-a` for hidden files, `-D` and `-f` for only folders or only files, `-I '*.tmp'` to hide by pattern, `--gitignore`, `--changed` for files with uncommitted changes, and `--since 2h` for recently modified ones. Sorting is natural (`file2` before `file10`) and accent-aware; `-t`, `-S` and `-X` sort by time, size and extension.
 
@@ -158,6 +158,52 @@ glint, seek, recap and crux name files, symbols and locations the same way, so a
 - `main.go:run@b681ef1`: a symbol as it was in a commit; `lib.cpp:parse#2`: the second of two definitions with the same name
 
 Paths are relative to the repository root. The format is specified in [Prism](https://github.com/Vaspyyy/prism/blob/main/docs/refs.md).
+
+## JSON
+
+`--json` prints one JSON document per run: the envelope glint shares with seek, recap and crux, specified in [Prism](https://github.com/Vaspyyy/prism/blob/main/docs/output.md). It has `schema`, `tool`, `version`, `args` and `repo` (root, branch, HEAD, uncommitted changes), then `result`, or `error` when the run failed.
+
+- `glint --json [paths]` puts the listing in `result.items`: each entry's name, path (as listed, relative to the working directory like `ls`), type, kind, size, mode, modification time, owner and git status, plus the description, last commit or folder size with `-p`, `-c` and `--du`. With `-T`, folders hold their contents in `children`. A file given without `-A` is listed as one entry.
+- `glint -A --json <file>` puts one file in `result.file`: its `path` (relative to the repository root, absolute outside it, like the text header), `lines`, `size` and `symbols`. Each symbol has a `ref` that seek, recap and crux accept (`internal/files/files.go:globSet.match`).
+- Failures are an envelope too, with `error.code` `usage` (bad arguments) or `failed` (anything else, such as a missing path), and glint exits with the same code as without `--json`. A missing path fails the whole run instead of listing the other paths.
+- Views that show more than a listing (`-P`, `-C`, `-M`, `--thumbs`, `-i`, `-W`, and `-A` with a directory) have no JSON output and fail with a `usage` error. `--help`, `--version` and `--init` still print text.
+- Lists are capped at 10,000 entries, and `truncated` says when that cut something.
+
+**Breaking change:** up to glint 0.7.0, `glint --json` printed a bare array of entries. That array is gone: the entries are now `result.items` inside the envelope, so a script that read the array needs `.result.items` (for example `glint --json | jq '.result.items[]'`).
+
+```console
+$ glint -A --json internal/textw/textw.go
+{
+  "schema": "prism/1",
+  "tool": "glint",
+  "version": "0.7.0",
+  "args": ["-A", "--json", "internal/textw/textw.go"],
+  "repo": { "root": "/home/ada/projects/glint", "git": true, "branch": "main", "dirty": false, … },
+  "context": null,
+  "result": {
+    "file": {
+      "path": "internal/textw/textw.go",
+      "lines": 111,
+      "size": 2122,
+      "symbols": [
+        {
+          "ref": "internal/textw/textw.go:Width",
+          "path": "internal/textw/textw.go",
+          "name": "Width",
+          "kind": "func",
+          "line": 15,
+          "end": 25,
+          "sig": "func Width(s string) int"
+        },
+        …
+      ]
+    }
+  },
+  "links": [],
+  "next": [],
+  "truncated": null
+}
+```
 
 ## Configuration
 

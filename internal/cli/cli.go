@@ -27,6 +27,8 @@ import (
 	"github.com/Vaspyyy/glint/internal/render"
 	"github.com/Vaspyyy/glint/internal/theme"
 	"github.com/Vaspyyy/glint/internal/tui"
+	"github.com/Vaspyyy/prism/repo"
+	"github.com/Vaspyyy/prism/report"
 )
 
 const version = "0.7.0"
@@ -170,16 +172,31 @@ type app struct {
 	isTTY   bool
 	since   time.Duration
 	kitty   bool
+	out     io.Writer
 	errOut  io.Writer
+	args    []string          // the arguments as given, for the JSON envelope
+	here    func() *repo.Info // the working directory's repository, once --json looks it up
 }
 
+// Run runs glint with the arguments after its name and returns the exit
+// status.
 func Run(args []string) int {
+	return run(args, os.Stdout, os.Stderr)
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	given := args
 	if env := os.Getenv("GLINT_OPTS"); env != "" {
 		args = append(strings.Fields(env), args...)
 	}
-	a := &app{errOut: os.Stderr}
+	a := &app{out: stdout, errOut: stderr, args: given}
 	a.flags = newFlagSet(&a.o)
+	// until the flags are parsed, look for --json in the arguments
+	jsonOut := wantsJSON(args)
 	die := func(err error) int {
+		if jsonOut || a.o.json {
+			return a.failJSON(a.out, report.CodeUsage, err.Error(), 2)
+		}
 		fmt.Fprintf(a.errOut, "glint: %v\nTry 'glint --help'.\n", err)
 		return 2
 	}
@@ -198,6 +215,9 @@ func Run(args []string) int {
 	}
 	if useCfg {
 		if err := config.Load(cfgPath, a.flags); err != nil {
+			if jsonOut || a.o.json {
+				return a.failJSON(a.out, report.CodeFailed, err.Error(), 2)
+			}
 			return die(err)
 		}
 	}
@@ -205,13 +225,17 @@ func Run(args []string) int {
 		return die(err)
 	}
 	o := &a.o
+	jsonOut = o.json
 	// a bare `glint [paths]` with stdout piped is almost always an agent or a script
 	// that wants facts, not an ls clone; GLINT_PLAIN=1 keeps the plain listing
 	if !o.agentMode && a.flags.NFlag() == 0 && os.Getenv("GLINT_PLAIN") == "" &&
-		!term.IsTerminal(int(os.Stdout.Fd())) {
+		!isTerminal(a.out) {
 		o.agentMode = true
 	}
 	if o.agentMode {
+		if o.json {
+			return a.fileJSON()
+		}
 		return a.agent()
 	}
 	// commit/heat columns only exist in the table, so asking for them implies it
@@ -219,8 +243,8 @@ func Run(args []string) int {
 		o.long = true
 	}
 
-	out := os.Stdout
-	a.isTTY = term.IsTerminal(int(out.Fd()))
+	out := a.out
+	a.isTTY = isTerminal(out)
 	for _, c := range [][]string{
 		{"color", o.color, "auto", "always", "never"},
 		{"icons", o.icons, "auto", "always", "never"},
@@ -279,6 +303,8 @@ func Run(args []string) int {
 		return 0
 	case o.initShell != "":
 		return a.init(out)
+	case o.json:
+		return a.listJSON()
 	case o.interactive:
 		return a.interactive()
 	case o.watch:
@@ -354,7 +380,7 @@ func (a *app) agent() int {
 		Budget: o.budget, MaxDepth: o.level, All: o.all > 0, Since: since, SinceRaw: o.since,
 		Changed: o.changed, Commits: o.commits, Outline: o.outline, Ignore: o.ignore, NoGit: o.noGit, Long: o.long,
 	}
-	w := bufio.NewWriterSize(os.Stdout, 64<<10)
+	w := bufio.NewWriterSize(a.out, 64<<10)
 	defer w.Flush()
 	if o.treemap || o.du {
 		return agent.DiskUsage(w, paths, opt)
@@ -483,7 +509,13 @@ func (a *app) list(w io.Writer, width int) int {
 	cutoff := time.Now().Add(-a.since)
 
 	status := 0
+	var failed []string // with --json: why paths couldn't be read, for the error envelope
 	fail := func(path string, err error) {
+		if o.json {
+			failed = append(failed, fmt.Sprintf("cannot access %s: %s", path, render.ErrMessage(err)))
+			status = 2
+			return
+		}
 		if bw, ok := w.(*bufio.Writer); ok {
 			bw.Flush()
 		}
@@ -565,6 +597,9 @@ func (a *app) list(w io.Writer, width int) int {
 	}
 
 	if o.json {
+		if len(failed) > 0 {
+			return a.failJSON(w, report.CodeFailed, strings.Join(failed, "; "), status)
+		}
 		var all []*fsx.Entry
 		if len(files) > 0 {
 			all = prepare(openRepo("."))(files)
@@ -587,10 +622,10 @@ func (a *app) list(w io.Writer, width int) int {
 				all = []*fsx.Entry{}
 			}
 		}
-		if err := render.JSON(w, all); err != nil {
-			fail("stdout", err)
-		}
-		return status
+		env := a.envelope()
+		items, truncated := render.Items(all, report.MaxItems)
+		env.Result, env.Truncated = report.Glint{Items: items}, truncated
+		return a.writeJSON(w, env)
 	}
 
 	list := func(es []*fsx.Entry) {

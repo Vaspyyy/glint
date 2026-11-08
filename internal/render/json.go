@@ -1,42 +1,11 @@
 package render
 
 import (
-	"encoding/json"
-	"io"
 	"io/fs"
-	"time"
 
 	"github.com/Vaspyyy/glint/internal/fsx"
+	"github.com/Vaspyyy/prism/report"
 )
-
-type jsonEntry struct {
-	Name     string      `json:"name"`
-	Path     string      `json:"path"`
-	Type     string      `json:"type"`
-	Kind     string      `json:"kind"`
-	Size     int64       `json:"size"`
-	DirSize  *int64      `json:"dir_size,omitempty"`
-	Mode     string      `json:"mode"`
-	Octal    string      `json:"octal"`
-	Modified time.Time   `json:"modified"`
-	Owner    string      `json:"owner,omitempty"`
-	Group    string      `json:"group,omitempty"`
-	Target   string      `json:"target,omitempty"`
-	Broken   bool        `json:"broken,omitempty"`
-	Git      string      `json:"git,omitempty"`
-	Peek     string      `json:"peek,omitempty"`
-	Commit   *jsonCommit `json:"last_commit,omitempty"`
-	Error    string      `json:"error,omitempty"`
-	Children []jsonEntry `json:"children,omitempty"`
-}
-
-type jsonCommit struct {
-	Hash    string    `json:"hash"`
-	Subject string    `json:"subject"`
-	Author  string    `json:"author"`
-	Time    time.Time `json:"time"`
-	Count   int       `json:"commits"`
-}
 
 func fileType(e *fsx.Entry) string {
 	m := e.Mode
@@ -55,16 +24,35 @@ func fileType(e *fsx.Entry) string {
 	return "file"
 }
 
-func toJSON(es []*fsx.Entry) []jsonEntry {
-	out := make([]jsonEntry, 0, len(es))
-	for _, e := range es {
+// Items turns a listing into the items of glint's JSON result (the shape is
+// prism's report.GlintEntry), a tree's subdirectories as children. Every
+// list is cut at limit entries; truncated is nil unless that dropped some,
+// and then counts the entries in the whole tree.
+func Items(es []*fsx.Entry, limit int) (items []report.GlintEntry, truncated *report.Truncated) {
+	var shown, total int
+	items = toItems(es, limit, &shown, &total)
+	if shown < total {
+		truncated = &report.Truncated{Shown: shown, Total: total}
+	}
+	return items, truncated
+}
+
+func toItems(es []*fsx.Entry, limit int, shown, total *int) []report.GlintEntry {
+	out := make([]report.GlintEntry, 0, min(len(es), limit))
+	for i, e := range es {
+		if i == limit {
+			*total += countEntries(es[i:])
+			break
+		}
+		*shown++
+		*total++
 		_, kind := Lookup(e)
-		j := jsonEntry{
+		j := report.GlintEntry{
 			Name: e.Name, Path: e.Path, Type: fileType(e), Kind: kind.String(),
 			Size: e.Size, Mode: e.Mode.String(), Octal: octal(e.Mode), Modified: e.ModTime,
 			Owner: e.Sys.Owner, Group: e.Sys.Group,
 			Target: e.Target, Broken: e.Broken, Git: e.Git.String(),
-			Children: toJSON(e.Children),
+			Children: toItems(e.Children, limit, shown, total),
 		}
 		if e.HasDirSize {
 			j.DirSize = &e.DirSize
@@ -73,7 +61,7 @@ func toJSON(es []*fsx.Entry) []jsonEntry {
 			j.Peek = e.Peek.Text
 		}
 		if c := e.Commit; c != nil {
-			j.Commit = &jsonCommit{c.Hash, c.Subject, c.Author, c.Time, c.Count}
+			j.Commit = &report.GlintCommit{Hash: c.Hash, Subject: c.Subject, Author: c.Author, Time: c.Time, Count: c.Count}
 		}
 		if e.ChildErr != nil {
 			j.Error = ErrMessage(e.ChildErr)
@@ -86,8 +74,11 @@ func toJSON(es []*fsx.Entry) []jsonEntry {
 	return out
 }
 
-func JSON(w io.Writer, es []*fsx.Entry) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(toJSON(es))
+// countEntries counts entries and everything below them.
+func countEntries(es []*fsx.Entry) int {
+	n := len(es)
+	for _, e := range es {
+		n += countEntries(e.Children)
+	}
+	return n
 }
