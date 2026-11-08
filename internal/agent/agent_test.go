@@ -235,3 +235,147 @@ func TestReadmeSummary(t *testing.T) {
 		t.Errorf("no README should give no summary, got %q", got)
 	}
 }
+
+// outlineLines returns the symbol lines of the single-file view of path.
+func outlineLines(t *testing.T, path string) []string {
+	t.Helper()
+	var buf bytes.Buffer
+	Run(&buf, []string{path}, Options{NoGit: true})
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	return lines[1:]
+}
+
+// Header path + ":" + the name a symbol line starts with must be a ref:
+// the qualified name goes first when the signature doesn't show it as is.
+func TestOutlineShowsRefNames(t *testing.T) {
+	dir := t.TempDir()
+	for name, c := range map[string]struct{ src, want string }{
+		"methods.go": {
+			"package x\n\ntype globSet []string\n\nfunc (g globSet) match(p string) bool {\n\treturn true\n}\n\nfunc List() {}\n",
+			"  3 type globSet []string\n" +
+				"  5 globSet.match  func (g globSet) match(p string) bool\n" +
+				"  9 func List()",
+		},
+		"dups.go": {
+			"package x\n\nfunc init() {}\n\nfunc init() {}\n\nfunc run() {}\n",
+			"  3 init#1  func init()\n" +
+				"  5 init#2  func init()\n" +
+				"  7 func run()",
+		},
+		"nested.py": {
+			"def outer():\n    def inner():\n        pass\n    return inner\n\nclass Job:\n    def run(self):\n        pass\n",
+			"  1 def outer():\n" +
+				"  2 outer.inner  def inner():\n" +
+				"  6 class Job:\n" +
+				"  7 Job.run  def run(self):",
+		},
+		"shape.rs": {
+			"struct Circle {\n    r: f64,\n}\n\nimpl Circle {\n    fn new() -> Self {\n        Circle { r: 1.0 }\n    }\n}\n\nimpl Shape for Circle {\n    fn area(&self) -> f64 {\n        self.r\n    }\n}\n",
+			"  1 struct Circle\n" +
+				"  5 Circle#2  impl Circle\n" +
+				"  6 Circle.new  fn new() -> Self\n" +
+				"  11 impl Shape for Circle\n" +
+				"  12 Circle.area  fn area(&self) -> f64",
+		},
+		"ext.kt": {
+			"fun String.toSlug(): String {\n    return this\n}\n",
+			"  1 toSlug  fun String.toSlug(): String",
+		},
+		"README.md": {
+			"# seek\n\n## Install\n\n## For coding agents\n",
+			"  1 # seek\n" +
+				"  3 ## Install\n" +
+				"  5 ## For coding agents",
+		},
+	} {
+		p := filepath.Join(dir, name)
+		write(t, p, c.src)
+		if got := strings.Join(outlineLines(t, p), "\n"); got != c.want {
+			t.Errorf("%s:\ngot\n%s\nwant\n%s", name, got, c.want)
+		}
+	}
+}
+
+func TestOutlineDefinesUseRefNames(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.h")
+	write(t, p, "#ifdef BIG\n#define W 640\n#else\n#define W 320\n#endif\n#define H 200\n")
+	lines := outlineLines(t, p)
+	if len(lines) != 1 || lines[0] != "  #defines (3): W#1 W#2 H" {
+		t.Errorf("got %q", lines)
+	}
+}
+
+// The map's inline outline names symbols the same way, ordinals counted
+// over the whole file even past the 40 symbols it parses for the map.
+func TestMapOutlineUsesRefNames(t *testing.T) {
+	dir := t.TempDir()
+	var src strings.Builder
+	src.WriteString("package x\n\nfunc init() {}\n\ntype T struct{}\n\nfunc (t T) Get() {}\n")
+	for i := range 45 {
+		fmt.Fprintf(&src, "\nfunc f%d() {}\n", i)
+	}
+	src.WriteString("\nfunc init() {}\n")
+	write(t, filepath.Join(dir, "x.go"), src.String())
+	write(t, filepath.Join(dir, "y.py"), "def outer():\n    def inner():\n        pass\n")
+	var buf bytes.Buffer
+	Run(&buf, []string{dir}, Options{NoGit: true, Outline: true})
+	out := buf.String()
+	for _, want := range []string{"  ↳ init#1:3 T:5 T.Get:7 f0:9 ", "  ↳ outer:1 outer.inner:2\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestHeaderPathIsRepoRelative(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "internal", "files", "files.go"), "package files\n\nfunc List() {}\n")
+	gitInit(t, proj)
+	other := filepath.Join(t.TempDir(), "other.go")
+	write(t, other, "package other\n")
+	t.Chdir(filepath.Join(proj, "internal")) // a subdirectory: paths stay relative to the root
+
+	header := func(path string, opt Options) string {
+		var buf bytes.Buffer
+		Run(&buf, []string{path}, opt)
+		return strings.SplitN(buf.String(), " — ", 2)[0]
+	}
+	if got := header(filepath.Join("files", "files.go"), Options{}); got != "internal/files/files.go" {
+		t.Errorf("inside the repo: got %q", got)
+	}
+	if got := header(other, Options{}); got != other {
+		t.Errorf("outside the repo: got %q, want the absolute path", got)
+	}
+	abs, _ := filepath.Abs(filepath.Join("files", "files.go"))
+	if got := header(filepath.Join("files", "files.go"), Options{NoGit: true}); got != abs {
+		t.Errorf("--no-git: got %q, want the absolute path", got)
+	}
+}
+
+func TestShowsName(t *testing.T) {
+	for _, c := range []struct {
+		sig, name string
+		want      bool
+	}{
+		{"func List(dir string) error", "List", true},
+		{"## For coding agents", "For coding agents", true},
+		{"function obj:method()", "obj:method", true},
+		{"impl<'a, T> Display for Grid<'a, T>", "Display for Grid<'a, T>", true},
+		{"module.exports.run = function ()", "module.exports.run", true},
+		{"class Job:", "Job", true},
+		{"func Listing() List", "List", true}, // the second occurrence is a whole word
+		{"func (g globSet) match(p string) bool", "globSet.match", false},
+		{"func Listing()", "List", false},
+		{"fun String.toSlug(): String", "toSlug", false},
+		{"func init()", "init#2", false},
+		{"def inner():", "outer.inner", false},
+		{"$el()", "el", false},
+	} {
+		if got := showsName(c.sig, c.name); got != c.want {
+			t.Errorf("showsName(%q, %q) = %v, want %v", c.sig, c.name, got, c.want)
+		}
+	}
+}

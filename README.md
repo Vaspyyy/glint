@@ -129,13 +129,15 @@ Given a file, `glint -A` lists its functions and types with line numbers, so an 
 
 ```console
 $ glint -A crates/aurora-render/src/gpu.rs
-…/gpu.rs — 103L (last commit 2mo ago: Initial path tracer) [M], modified 1m ago
+crates/aurora-render/src/gpu.rs — 103L (last commit 2mo ago: Initial path tracer) [M], modified 1m ago
   3 pub struct Context
   8 pub fn create_device(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
   20 pub fn upload_scene(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
   32 pub fn dispatch(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
   44 pub fn readback(ctx: &mut Context, input: &[f32]) -> Result<f32, Error>
 ```
+
+The header gives the path relative to the root of the repository you run glint in (absolute for a file outside it). When a signature doesn't show a symbol's name as it is, the name comes first: `187 globSet.match  func (g globSet) match(p string) bool` for a method, `5 init#2  func init()` for a second definition with the same name. The header path, a colon and that name make a ref (see [Refs](#refs)).
 
 On a Rust workspace with about 4,000 files, `glint -A` came to roughly 2,900 tokens. For comparison, `tree -L 2` was about 13,000 and `git ls-files` about 50,000, and neither includes git state or line counts. The format was refined over several rounds of comparisons in which different models used glint alongside `ls`, `tree`, `git` and `du` on real projects.
 
@@ -145,6 +147,17 @@ To have your agent use it, add something like this to its instructions (for exam
 To explore directories, prefer `glint -A [dir]` over `ls`, `tree`, `find` or `git ls-files`.
 `glint -A <file>` lists a file's symbols with line numbers.
 ```
+
+## Refs
+
+glint, seek, recap and crux name files, symbols and locations the same way, so anything one of them prints can be handed to another as is:
+
+- `internal/files/files.go`: a file
+- `internal/files/files.go:List`: a symbol, by its qualified name (`Repo.Open` for a method, `outer.inner` for a nested function)
+- `internal/files/files.go:73`: a line (`73:5` with a column, `73-107` a range); tools that take a symbol use the innermost one containing it
+- `main.go:run@b681ef1`: a symbol as it was in a commit; `lib.cpp:parse#2`: the second of two definitions with the same name
+
+Paths are relative to the repository root. The format is specified in [Prism](https://github.com/Vaspyyy/prism/blob/main/docs/refs.md).
 
 ## Configuration
 

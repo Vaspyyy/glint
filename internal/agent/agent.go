@@ -22,6 +22,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/git"
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/project"
+	"github.com/Vaspyyy/prism/repo"
 )
 
 type Options struct {
@@ -87,6 +88,7 @@ type node struct {
 	project  *project.Info
 	commit   *git.Commit
 	symbols  []Symbol
+	refs     []string // each symbol's name as a ref prints it
 }
 
 // directories that are almost never worth an agent's tokens outside git
@@ -109,6 +111,7 @@ const (
 func Run(w io.Writer, paths []string, opt Options) int {
 	opt.defaults()
 	status := 0
+	var here func() *repo.Info // the working directory's repository, looked up for the first file
 	for i, p := range paths {
 		if i > 0 {
 			fmt.Fprintln(w)
@@ -122,7 +125,10 @@ func Run(w io.Writer, paths []string, opt Options) int {
 		if st.IsDir() {
 			listDir(w, p, opt)
 		} else {
-			describeFile(w, p, st, opt)
+			if here == nil && !opt.NoGit {
+				here = workRepo()
+			}
+			describeFile(w, p, st, opt, here)
 		}
 	}
 	return status
@@ -937,7 +943,7 @@ func details(root *node, opt Options) {
 			f.lines++
 		}
 		if opt.Outline && HasOutline(f.name) {
-			f.symbols = Outline(f.abs, 40)
+			f.symbols, f.refs = outlineRefs(f.abs, 40)
 		}
 	})
 }
@@ -1335,11 +1341,11 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 		if len(k.symbols) > 0 {
 			var parts []string
 			used, dropped := 0, 0
-			for _, s := range k.symbols {
+			for i, s := range k.symbols {
 				if s.Kind == "define" {
 					continue
 				}
-				p := fmt.Sprintf("%s:%d", s.Name, s.Line)
+				p := fmt.Sprintf("%s:%d", k.refs[i], s.Line)
 				if used+len(p) > 220 {
 					dropped++
 					continue
@@ -1733,8 +1739,10 @@ func groupIgnored(paths []string) []string {
 	return out
 }
 
-// describeFile is the single-file view: facts plus an outline with line numbers.
-func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options) {
+// describeFile is the single-file view: facts plus an outline with line
+// numbers. here returns the working directory's repository (nil with
+// --no-git).
+func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info) {
 	abs, _ := filepath.Abs(path)
 	n := &node{name: filepath.Base(abs), abs: abs, mode: st.Mode(), size: st.Size(), mtime: st.ModTime()}
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/") {
@@ -1759,7 +1767,7 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options) {
 	opt.Outline = true
 	parent := &node{dir: true, kids: []*node{n}, expanded: true}
 	details(parent, opt)
-	line := abs + " — " + strings.TrimPrefix(fileLine(n, 1, Options{}), quote(n.name)+" ")
+	line := headerPath(abs, here) + " — " + strings.TrimPrefix(fileLine(n, 1, Options{}), quote(n.name)+" ")
 	if opt.Long {
 		line += ", " + n.mode.String()
 	}
@@ -1775,12 +1783,13 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options) {
 		return
 	}
 	const maxSyms = 150
-	syms := Outline(abs, 5000)
+	syms := Outline(abs, wholeFile)
+	names := refNames(syms)
 	var defines []string
 	shownN := 0
-	for _, s := range syms {
+	for i, s := range syms {
 		if s.Kind == "define" {
-			defines = append(defines, s.Name)
+			defines = append(defines, names[i])
 			continue
 		}
 		if shownN == maxSyms {
@@ -1788,7 +1797,7 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options) {
 			continue
 		}
 		if shownN < maxSyms {
-			fmt.Fprintf(w, "  %d %s\n", s.Line, s.Sig)
+			fmt.Fprintf(w, "  %d %s\n", s.Line, symbolLine(s, names[i]))
 		}
 		shownN++
 	}
