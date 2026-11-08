@@ -379,3 +379,34 @@ func TestShowsName(t *testing.T) {
 		}
 	}
 }
+
+// The JSON outline has the same names as the text view, defines included,
+// and is cut at the limit it's given.
+func TestFileJSONMatchesText(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.h")
+	write(t, p, "#define W 640\n#define W 320\nstruct Grid { int w; };\nint grid_new(void) { return 0; }\n")
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, truncated := File(p, st, Options{}, nil, 100)
+	if truncated != nil || f.Path != p || f.Lines != 4 {
+		t.Fatalf("got %+v, truncated %+v", f, truncated)
+	}
+	var names []string
+	for _, s := range f.Symbols {
+		names = append(names, s.Kind+" "+strings.TrimPrefix(s.Ref, p+":"))
+	}
+	if got := strings.Join(names, ", "); got != "define W#1, define W#2, struct Grid, func grid_new" {
+		t.Errorf("got %s", got)
+	}
+	text := strings.Join(outlineLines(t, p), "\n")
+	if !strings.Contains(text, "#defines (2): W#1 W#2") {
+		t.Errorf("text view disagrees:\n%s", text)
+	}
+
+	f, truncated = File(p, st, Options{}, nil, 3)
+	if len(f.Symbols) != 3 || truncated == nil || truncated.Shown != 3 || truncated.Total != 4 {
+		t.Errorf("limit 3: %d symbols, truncated %+v", len(f.Symbols), truncated)
+	}
+}

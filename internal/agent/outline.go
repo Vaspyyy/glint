@@ -1,15 +1,20 @@
 package agent
 
 import (
+	"io/fs"
+	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Vaspyyy/glint/internal/git"
 	"github.com/Vaspyyy/prism/outline"
 	"github.com/Vaspyyy/prism/ref"
 	"github.com/Vaspyyy/prism/repo"
+	"github.com/Vaspyyy/prism/report"
 )
 
 // Symbol is a definition found by the outline rules.
@@ -99,10 +104,10 @@ func glued(r rune) bool {
 	return r == '_' || r == '$' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// workRepo starts looking for the repository containing the working
+// WorkRepo starts looking for the repository containing the working
 // directory, in the background since it runs git, and returns a function
 // that waits for it. Outside a repository the Info has Git false.
-func workRepo() func() *repo.Info {
+func WorkRepo() func() *repo.Info {
 	ch := make(chan *repo.Info, 1)
 	go func() {
 		in, err := repo.Detect(".")
@@ -127,4 +132,77 @@ func headerPath(abs string, here func() *repo.Info) string {
 		}
 	}
 	return abs
+}
+
+// File is the single-file view as data, for --json: the facts the header
+// shows (the path as the header names it, lines, size, modification time,
+// mode, kind, git status and last commit) and the whole outline with each
+// symbol's ref (the same names the text view prints). here is as for the
+// header, nil with --no-git. At most limit symbols are returned; truncated
+// says when there were more.
+func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limit int) (f report.GlintFile, truncated *report.Truncated) {
+	opt.defaults()
+	abs, _ := filepath.Abs(path)
+	n := fileNode(abs, st, opt)
+	f = report.GlintFile{
+		Path: headerPath(abs, here), Lines: n.lines, Size: n.size, Modified: n.mtime, Mode: n.mode.String(),
+		Kind: fileKind(n), Image: n.note, LinkTarget: n.target, Git: gitWord(n.git), Symbols: []report.Symbol{},
+	}
+	if c := n.commit; c != nil {
+		f.Commit = &report.GlintCommit{Hash: c.Hash, Subject: c.Subject, Author: c.Author, Time: c.Time, Count: c.Count}
+	}
+	if len(n.symbols) == 0 { // like the text view: no outline for binary, huge or symlinked files
+		return f, nil
+	}
+	// the whole file, so ordinals count every definition (files are at most outline.MaxSize)
+	syms := report.Symbols(f.Path, Outline(abs, math.MaxInt))
+	if len(syms) > limit {
+		truncated = &report.Truncated{Shown: limit, Total: len(syms)}
+		syms = syms[:limit]
+	}
+	f.Symbols = syms
+	return f, truncated
+}
+
+// fileKind is what the single-file view says a file is when it isn't plain
+// text: an image (n.note holds its size), binary, vendored or generated.
+func fileKind(n *node) string {
+	switch {
+	case n.note != "":
+		return "image"
+	case n.binary:
+		return "binary"
+	case n.vendored:
+		return "vendored"
+	case generatedName(n.name):
+		return "generated"
+	}
+	return ""
+}
+
+// gitWord names a file's git status as a word, as the header's marks show
+// it: "" when it's clean (its last commit says it's tracked) or not in git.
+func gitWord(s git.Status) string {
+	x, y := s.X, s.Y
+	switch {
+	case s.Clean():
+		return ""
+	case s.Ignored():
+		return "ignored"
+	case s.Untracked():
+		return "untracked"
+	case x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D'):
+		return "conflict"
+	case x == 'D' || y == 'D':
+		return "deleted"
+	case x == 'R':
+		return "renamed"
+	case x == 'C':
+		return "copied"
+	case x == 'A':
+		return "added"
+	case x == 'T' || y == 'T':
+		return "type changed"
+	}
+	return "modified"
 }

@@ -38,6 +38,7 @@ type Options struct {
 	Ignore   []string      // name globs to drop
 	NoGit    bool
 	Long     bool // mode and age on every line
+	Heat     bool // single file with --json: count the commits touching it
 
 	sameAge   string // set when most top-level entries share an age: said once in the header
 	workspace bool   // listing a folder of projects that isn't itself a repo
@@ -126,7 +127,7 @@ func Run(w io.Writer, paths []string, opt Options) int {
 			listDir(w, p, opt)
 		} else {
 			if here == nil && !opt.NoGit {
-				here = workRepo()
+				here = WorkRepo()
 			}
 			describeFile(w, p, st, opt, here)
 		}
@@ -1739,11 +1740,10 @@ func groupIgnored(paths []string) []string {
 	return out
 }
 
-// describeFile is the single-file view: facts plus an outline with line
-// numbers. here returns the working directory's repository (nil with
-// --no-git).
-func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info) {
-	abs, _ := filepath.Abs(path)
+// fileNode reads what the single-file view shows about a file: its facts,
+// line count and (the first symbols of) its outline, and with git its status
+// and last commit.
+func fileNode(abs string, st fs.FileInfo, opt Options) *node {
 	n := &node{name: filepath.Base(abs), abs: abs, mode: st.Mode(), size: st.Size(), mtime: st.ModTime()}
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/") {
 		if vendorDirs[strings.ToLower(part)] {
@@ -1760,13 +1760,22 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here fu
 	if repo != nil {
 		n.git = repo.Status(abs)
 		if !n.git.Untracked() && !n.git.Ignored() {
-			hist := repo.History(filepath.Dir(abs), []string{n.name}, false)
+			hist := repo.History(filepath.Dir(abs), []string{n.name}, opt.Heat)
 			n.commit = hist[n.name]
 		}
 	}
 	opt.Outline = true
 	parent := &node{dir: true, kids: []*node{n}, expanded: true}
 	details(parent, opt)
+	return n
+}
+
+// describeFile is the single-file view: facts plus an outline with line
+// numbers. here returns the working directory's repository (nil with
+// --no-git).
+func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info) {
+	abs, _ := filepath.Abs(path)
+	n := fileNode(abs, st, opt)
 	line := headerPath(abs, here) + " — " + strings.TrimPrefix(fileLine(n, 1, Options{}), quote(n.name)+" ")
 	if opt.Long {
 		line += ", " + n.mode.String()

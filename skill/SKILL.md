@@ -23,6 +23,7 @@ description: Explore directories and codebases token-efficiently with `glint -A`
 | What is using disk space | `glint -A -M <dir>` |
 | Hide paths by name glob | `glint -A -I '*.snap' -I fixtures` |
 | Exact listing like ls -l (mode, bytes, timestamp) plus line counts | `glint -A -l <dir>` |
+| JSON for a program (one envelope, refs per symbol) | `glint -A --json <file>` (outline in `result.file`), `glint --json <dir>` (listing in `result.items`) |
 
 Several paths can be passed at once: `glint -A src/ tests/ Cargo.toml`.
 
