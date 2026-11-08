@@ -280,15 +280,21 @@ func (s *scan) walk(abs string, opt Options) {
 	sem := make(chan struct{}, 16)
 	for _, e := range ents {
 		p := filepath.Join(abs, e.Name())
+		// the walkers started for earlier folders append to the same
+		// slices, so this loop takes the lock too
 		if !e.IsDir() {
 			if info, err := e.Info(); err == nil {
+				mu.Lock()
 				s.items = append(s.items, item{abs: p, info: info})
+				mu.Unlock()
 			}
 			continue
 		}
 		if skip(e.Name()) {
 			if e.Name() != ".git" {
+				mu.Lock()
 				s.skipped = append(s.skipped, e.Name()+"/")
+				mu.Unlock()
 			}
 			continue
 		}
