@@ -803,6 +803,13 @@ func expandable(k *node) bool {
 	return k.dir && !k.sub && !k.skipped && !k.empty && k.hollow == "" && k.series == nil && len(k.kids) > 0
 }
 
+// openable reports whether a folder has entries to list: expandable, or
+// a project of a workspace (which the map opens only when it's recently
+// active). One left closed counts as not expanded, glance or not.
+func openable(k *node) bool {
+	return expandable(k) || (k.sub && len(k.kids) > 0)
+}
+
 // expand opens directories in order of value (code first, any depth) until
 // the line budget is used up. Media and data folders open last, if at all.
 // In a workspace of projects every project first gets a one-line glance.
@@ -823,7 +830,7 @@ func expand(root *node, opt Options) (used int, glances []*node) {
 	workspace := opt.workspace && projects >= 3
 	if workspace {
 		for _, k := range root.kids {
-			if expandable(k) || (k.sub && len(k.kids) > 0) {
+			if openable(k) {
 				if used >= opt.Budget {
 					break
 				}
@@ -1392,7 +1399,7 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 					fmt.Fprintln(w, indent+"  "+g)
 				}
 				collapsed++
-			case expandable(k):
+			case openable(k): // counted like a glanced one: the footer doesn't depend on glances
 				collapsed++
 			}
 			continue

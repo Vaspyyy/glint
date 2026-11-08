@@ -634,3 +634,54 @@ func TestContextNestedPathsOutside(t *testing.T) {
 	}
 	unwritten()
 }
+
+// When the context: line takes the place of a closed project's glance,
+// the project still counts as not expanded: the note under the map stays.
+func TestContextWorkspaceFooter(t *testing.T) {
+	isolateGit(t)
+	ws := t.TempDir()
+	commit := func(dir string) {
+		gitIn(t, dir, "add", ".")
+		gitIn(t, dir, "commit", "-qm", "c")
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, name := range []string{"o1", "o2", "o3"} {
+		dir := filepath.Join(ws, name)
+		write(t, filepath.Join(dir, "src", "a.go"), "package a\n")
+		write(t, filepath.Join(dir, "b.txt"), "b\n")
+		gitIn(t, dir, "init", "-q", "-b", "main")
+		commit(dir)
+		for _, f := range []string{filepath.Join("src", "a.go"), "b.txt"} {
+			if err := os.Chtimes(filepath.Join(dir, f), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// recently active, with a change on its branch and empty folders: lines
+	// the budget didn't plan for, so the map fills it
+	dir := filepath.Join(ws, "new")
+	write(t, filepath.Join(dir, "a.go"), "package a\n")
+	write(t, filepath.Join(dir, "b.go"), "package a\n")
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	commit(dir)
+	gitIn(t, dir, "checkout", "-qb", "feature")
+	write(t, filepath.Join(dir, "a.go"), "package a\n\nfunc A() {}\n")
+	commit(dir)
+	for _, e := range []string{"e1", "e2", "e3", "e4"} {
+		if err := os.Mkdir(filepath.Join(dir, e), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(ws)
+	on, off := agentView(t, Options{Budget: 18}, "."), agentView(t, Options{Budget: 18, NoContext: true}, ".")
+	if !strings.HasPrefix(on, "context: new: 1 changed file\n") || strings.Count(on, "↳ ") != strings.Count(off, "↳ ")-1 {
+		t.Fatalf("want the context: line in place of a glance:\non:\n%s\noff:\n%s", on, off)
+	}
+	footer := func(out string) string {
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		return lines[len(lines)-1]
+	}
+	if footer(on) != footer(off) || !strings.HasPrefix(footer(off), "3 dirs not expanded ") {
+		t.Errorf("want the same note with and without context, counting o1, o2 and o3:\non:\n%s\noff:\n%s", on, off)
+	}
+}
