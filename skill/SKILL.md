@@ -73,7 +73,10 @@ hatrick/ (254 files, 53M; C · build.sh; own git repo: main, 2 uncommitted, last
 - Folders are expanded by value: source and docs come before media, data dumps and vendored code, and breadth comes before depth. Open a collapsed one with `glint -A <dir>` rather than raising the budget a lot.
 
 ### Single file: `glint -A path/to/file`
-Prints a header (lines, size, last commit, modified time, `VENDORED` if applicable), then one line per symbol: line number and signature (`1863 fn toast_label(kind: FrameType) -> Rgba`). C `#define`s go on one compact line at the end. Very large outlines are capped at 150 symbols. Works for Go, Rust, Python, JS/TS, C/C++, Java/Kotlin/C#, GDScript, shell, Lua, Ruby and Markdown headings. It's regex-based, so treat it as an index, not a parser.
+Prints a header (the path relative to the repo root, lines, size, last commit, modified time, `VENDORED` if applicable), then one line per symbol: line number and signature (`1863 fn toast_label(kind: FrameType) -> Rgba`). When the signature doesn't show the symbol's name as is, the name comes first: `187 globSet.match  func (g globSet) match(p string) bool` (a method), `2 outer.inner  def inner():` (nested), `5 init#2  func init()` (second of two). C `#define`s go on one compact line at the end. Very large outlines are capped at 150 symbols. Works for Go, Rust, Python, JS/TS, C/C++, Java/Kotlin/C#, GDScript, shell, Lua, Ruby and Markdown headings. It's regex-based, so treat it as an index, not a parser.
+
+### Refs
+Header path + `:` + a symbol line's name is a ref that seek, recap and crux accept as is: `internal/files/files.go:globSet.match`. Forms: `path`, `path:Name` (qualified: `Repo.Open`, `outer.inner`), `path:12` (a line; `12:5`, `12-40`), `path:Name@rev` (as in a commit), `path:Name#2` (second of two definitions). `--outline` in the map uses the same names (`Name:line`).
 
 ### Disk: `glint -A -M <dir>`
 Matches `du`: allocated blocks, hardlinks counted once, ignored files included. Gives the biggest entries and their biggest children, with build output marked `[regenerable]`. The header totals how much is regenerable (target/, node_modules/, .godot/, build/, …).
