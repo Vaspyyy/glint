@@ -3,7 +3,7 @@ package agent
 import (
 	"os"
 
-	"github.com/Vaspyyy/glint/outline"
+	"github.com/Vaspyyy/prism/outline"
 )
 
 // Symbol is a definition found by the outline rules.
