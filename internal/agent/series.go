@@ -62,6 +62,7 @@ func groupSeries(n *node) {
 			if m.mtime.After(s.mtime) {
 				s.mtime = m.mtime
 			}
+			m.inSeries = s
 			drop[m] = true
 		}
 		replace[g[0]] = s
@@ -89,6 +90,7 @@ func groupSeries(n *node) {
 			if m.mtime.After(s.mtime) {
 				s.mtime = m.mtime
 			}
+			m.inSeries = s
 			drop[m] = true
 		}
 		replace[rest[0]] = s

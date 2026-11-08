@@ -15,6 +15,7 @@ import (
 	"github.com/Vaspyyy/prism/ref"
 	"github.com/Vaspyyy/prism/repo"
 	"github.com/Vaspyyy/prism/report"
+	"github.com/Vaspyyy/prism/work"
 )
 
 // Symbol is a definition found by the outline rules.
@@ -137,13 +138,18 @@ func headerPath(abs string, here func() *repo.Info) string {
 // File is the single-file view as data, for --json: the facts the header
 // shows (the path as the header names it, lines, size, modification time,
 // mode, kind, git status and last commit) and the whole outline with each
-// symbol's ref (the same names the text view prints). here is as for the
-// header, nil with --no-git. At most limit symbols are returned; truncated
-// says when there were more.
-func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limit int) (f report.GlintFile, truncated *report.Truncated) {
+// symbol's ref (the same names the text view prints) and context marks.
+// here is as for the header, nil with --no-git. At most limit symbols are
+// returned; truncated says when there were more. ctx is the envelope's
+// context: nil when it's off (opt.NoContext, PRISM_NO_CONTEXT=1, --no-git).
+func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limit int) (f report.GlintFile, truncated *report.Truncated, ctx *report.Context) {
 	opt.defaults()
 	abs, _ := filepath.Abs(path)
-	n := fileNode(abs, st, opt)
+	// JSON says what the whole repository's context is, so the changes
+	// are always loaded
+	load := newContexts(work.Disabled(opt.NoContext || opt.NoGit)).start(abs, false, here, nil)
+	n := fileNode(abs, st, opt, nil)
+	c := load()
 	f = report.GlintFile{
 		Path: headerPath(abs, here), Lines: n.lines, Size: n.size, Modified: n.mtime, Mode: n.mode.String(),
 		Kind: fileKind(n), Image: n.note, LinkTarget: n.target, Git: gitWord(n.git), Symbols: []report.Symbol{},
@@ -152,7 +158,7 @@ func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limi
 		f.Commit = &report.GlintCommit{Hash: c.Hash, Subject: c.Subject, Author: c.Author, Time: c.Time, Count: c.Count}
 	}
 	if len(n.symbols) == 0 { // like the text view: no outline for binary, huge or symlinked files
-		return f, nil
+		return f, nil, c.st.Context()
 	}
 	// the whole file, so ordinals count every definition (files are at most outline.MaxSize)
 	syms := report.Symbols(f.Path, Outline(abs, math.MaxInt))
@@ -160,8 +166,15 @@ func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limi
 		truncated = &report.Truncated{Shown: limit, Total: len(syms)}
 		syms = syms[:limit]
 	}
+	// a symbol's ref names the file as the header does; its marks need the
+	// path in the file's own repository
+	if rel, ok := c.rel(abs); ok {
+		for i := range syms {
+			syms[i].Marks = c.st.Marks(rel + ":" + strings.TrimPrefix(syms[i].Ref, f.Path+":"))
+		}
+	}
 	f.Symbols = syms
-	return f, truncated
+	return f, truncated, c.st.Context() // after the marks: it says which were handed out
 }
 
 // fileKind is what the single-file view says a file is when it isn't plain

@@ -17,7 +17,7 @@ var helpGroups = []struct {
 	flags []string
 }{
 	{"Views", []string{"long", "oneline", "tree", "level", "interactive", "projects", "map", "thumbs", "card", "watch", "json", "width"}},
-	{"For agents", []string{"agent", "budget", "outline"}},
+	{"For agents", []string{"agent", "budget", "outline", "no-context"}},
 	{"Filtering", []string{"all", "only-dirs", "only-files", "directory", "ignore", "gitignore", "changed", "since"}},
 	{"Sorting", []string{"sort", "sort-time", "sort-size", "sort-ext", "reverse", "group-dirs"}},
 	{"Details", []string{"peek", "git", "commits", "heat", "no-git", "du", "bars", "bytes", "time-style", "octal", "inode", "links", "group", "no-owner", "no-header", "no-summary"}},

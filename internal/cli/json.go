@@ -170,8 +170,8 @@ func (a *app) fileJSON() int {
 	if st.IsDir() {
 		return usage("-A --json takes a file and prints its outline; for a directory, use glint --json %s (its listing)", path)
 	}
-	file, truncated := agent.File(path, st, agent.Options{NoGit: o.noGit, Heat: o.heat}, here, report.MaxItems)
+	file, truncated, ctx := agent.File(path, st, agent.Options{NoGit: o.noGit, Heat: o.heat, NoContext: o.noContext}, here, report.MaxItems)
 	env := a.envelope()
-	env.Result, env.Truncated = report.Glint{File: &file}, truncated
+	env.Result, env.Truncated, env.Context = report.Glint{File: &file}, truncated, ctx
 	return a.writeJSON(a.out, env)
 }
