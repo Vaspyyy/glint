@@ -52,6 +52,7 @@ type options struct {
 	thumbs                      string
 	interactive, watch          bool
 	agentMode, outline          bool
+	noContext                   bool
 	projects                    bool
 	budget                      int
 	icons, color, theme         string
@@ -88,6 +89,7 @@ func newFlagSet(o *options) *pflag.FlagSet {
 	f.BoolVarP(&o.agentMode, "agent", "A", false, "compact, token-efficient output for AI agents")
 	f.IntVar(&o.budget, "budget", 200, "with --agent: approximate line budget for the tree")
 	f.BoolVar(&o.outline, "outline", false, "with --agent: list symbols (funcs, types) with line numbers")
+	f.BoolVar(&o.noContext, "no-context", false, "ignore context; also PRISM_NO_CONTEXT=1")
 	f.BoolVar(&o.json, "json", false, "machine-readable JSON output")
 	f.IntVarP(&o.width, "width", "w", 0, "override terminal width")
 
@@ -383,6 +385,7 @@ func (a *app) agent() int {
 	opt := agent.Options{
 		Budget: o.budget, MaxDepth: o.level, All: o.all > 0, Since: since, SinceRaw: o.since,
 		Changed: o.changed, Commits: o.commits, Outline: o.outline, Ignore: o.ignore, NoGit: o.noGit, Long: o.long,
+		NoContext: o.noContext,
 	}
 	w := bufio.NewWriterSize(a.out, 64<<10)
 	defer w.Flush()

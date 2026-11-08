@@ -23,6 +23,7 @@ description: Explore directories and codebases token-efficiently with `glint -A`
 | What is using disk space | `glint -A -M <dir>` |
 | Hide paths by name glob | `glint -A -I '*.snap' -I fixtures` |
 | Exact listing like ls -l (mode, bytes, timestamp) plus line counts | `glint -A -l <dir>` |
+| Output that ignores the current work (no marks, no `context:` line) | `glint -A --no-context` or `PRISM_NO_CONTEXT=1` |
 | JSON for a program (one envelope, refs per symbol) | `glint -A --json <file>` (outline in `result.file`), `glint --json <dir>` (listing in `result.items`) |
 
 Several paths can be passed at once: `glint -A src/ tests/ Cargo.toml`.
@@ -30,6 +31,7 @@ Several paths can be passed at once: `glint -A src/ tests/ Cargo.toml`.
 ## Reading the output
 
 ```
+context: 2 changed symbols vs HEAD, 3 symbols changed on this branch since 6e1c2d0   ← what the marks are based on
 /abs/path — Rust · my-crate · git main 2 uncommitted; HEAD a1b2c3d 3h ago: subject
 412 files, 3.1M (what git sees: tracked + untracked, excluding ignored)   ← says what the numbers count
 HEAD touched: src/parser/lexer.rs, src/lib.rs                            files of the last commit
@@ -41,6 +43,7 @@ src/ (120 files, 900K; newest file 3h ago) [2 changed]   expanded folder, with h
   parser/ (14 files, 80K; rs×14)               collapsed folder: counts and main file types
     ↳ ast.rs lexer.rs mod.rs tests/            glance: names of a collapsed folder's children
   lib.rs 412L [M]                              text file: line count, git status
+  parser.rs 210L [branch]                      committed on this branch, not on the default branch
   frame_{001..240}.png ×240 64x64 each, 2M total   numbered series folded into one line
   run1/ (6 files, 30K)                         first of a family of similar folders...
   run2/ … run9/ (8 more dirs like run1/; ...)  ...the rest folded
@@ -70,11 +73,12 @@ hatrick/ (254 files, 53M; C · build.sh; own git repo: main, 2 uncommitted, last
 - Deeper levels can be cut to fit the budget. Those lines always say what was left out.
 - `NL` means N lines. Read big files (over about 800 lines) with an offset, after `glint -A <file>` has told you where to look.
 - File git marks: `[M]` modified, `[A]` staged, `[D]` deleted, `[new]` untracked. Folders show `[N changed]`, or `[all new]` if everything inside is untracked. Repos show their own count (deletions included) in their line.
+- Context marks (on by default, shared with seek, recap and crux): `[branch]` on files committed on this branch since it left the default branch, `[N branch]` on folders. With `--outline` and in `glint -A <file>`, symbols get `[changed]` (uncommitted) or `[branch]`; a new, added or renamed file's symbols stay unmarked. The `context:` line on top says what they're based on. Marks never change what's listed. `--no-context` drops them.
 - In a subfolder of a repo the header says `N uncommitted here, M in the whole repo`. A gitignored folder says so and lists what's on disk.
 - Folders are expanded by value: source and docs come before media, data dumps and vendored code, and breadth comes before depth. Open a collapsed one with `glint -A <dir>` rather than raising the budget a lot.
 
 ### Single file: `glint -A path/to/file`
-Prints a header (the path relative to the repo root, lines, size, last commit, modified time, `VENDORED` if applicable), then one line per symbol: line number and signature (`1863 fn toast_label(kind: FrameType) -> Rgba`). When the signature doesn't show the symbol's name as is, the name comes first: `187 globSet.match  func (g globSet) match(p string) bool` (a method), `2 outer.inner  def inner():` (nested), `5 init#2  func init()` (second of two). C `#define`s go on one compact line at the end. Very large outlines are capped at 150 symbols. Works for Go, Rust, Python, JS/TS, C/C++, Java/Kotlin/C#, GDScript, shell, Lua, Ruby and Markdown headings. It's regex-based, so treat it as an index, not a parser.
+Prints a header (the path relative to the repo root, lines, size, last commit, git and context marks, modified time, `VENDORED` if applicable), then one line per symbol: line number and signature (`1863 fn toast_label(kind: FrameType) -> Rgba`), plus `[changed]` or `[branch]` when the current work changed it. When the signature doesn't show the symbol's name as is, the name comes first: `187 globSet.match  func (g globSet) match(p string) bool` (a method), `2 outer.inner  def inner():` (nested), `5 init#2  func init()` (second of two). C `#define`s go on one compact line at the end. Very large outlines are capped at 150 symbols. Works for Go, Rust, Python, JS/TS, C/C++, Java/Kotlin/C#, GDScript, shell, Lua, Ruby and Markdown headings. It's regex-based, so treat it as an index, not a parser.
 
 ### Refs
 Header path + `:` + a symbol line's name is a ref that seek, recap and crux accept as is: `internal/files/files.go:globSet.match`. Forms: `path`, `path:Name` (qualified: `Repo.Open`, `outer.inner`), `path:12` (a line; `12:5`, `12-40`), `path:Name@rev` (as in a commit), `path:Name#2` (second of two definitions). `--outline` in the map uses the same names (`Name:line`).

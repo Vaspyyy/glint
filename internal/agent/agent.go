@@ -9,8 +9,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/project"
 	"github.com/Vaspyyy/prism/repo"
+	"github.com/Vaspyyy/prism/work"
 )
 
 type Options struct {
@@ -39,9 +42,14 @@ type Options struct {
 	NoGit    bool
 	Long     bool // mode and age on every line
 	Heat     bool // single file with --json: count the commits touching it
+	// NoContext ignores the work context (prism/work): no marks, no
+	// context: line. PRISM_NO_CONTEXT=1 and NoGit do the same.
+	NoContext bool
 
-	sameAge   string // set when most top-level entries share an age: said once in the header
-	workspace bool   // listing a folder of projects that isn't itself a repo
+	sameAge   string   // set when most top-level entries share an age: said once in the header
+	workspace bool     // listing a folder of projects that isn't itself a repo
+	ctx       *workCtx // the listed repository's context; nil when there's none
+	prefix    string   // the listing root relative to that repository's root
 }
 
 func (o *Options) defaults() {
@@ -77,10 +85,13 @@ type node struct {
 	gitlink  bool        // a directory entry git lists as one item (submodule / nested repo)
 	repo     *nestedRepo // set on the dir of a repo found inside a non-git scan
 	vendored bool
-	recent   bool   // opened because it is one of the most recently active projects
-	changedN int    // listed files with uncommitted changes below this dir
-	newN     int    // ...of which untracked
-	like     string // for a dir series: the sibling it resembles
+	marks    []string // context marks printed after a file: "branch"
+	branchN  int      // listed files below this dir marked [branch]
+	inSeries *node    // the node standing in for the run of entries this one was folded into
+	recent   bool     // opened because it is one of the most recently active projects
+	changedN int      // listed files with uncommitted changes below this dir
+	newN     int      // ...of which untracked
+	like     string   // for a dir series: the sibling it resembles
 
 	expanded bool
 	lines    int
@@ -113,25 +124,45 @@ func Run(w io.Writer, paths []string, opt Options) int {
 	opt.defaults()
 	status := 0
 	var here func() *repo.Info // the working directory's repository, looked up for the first file
+	// every path's context is registered first, so a repository is loaded
+	// once, scoped to all the paths listed in it
+	cs := newContexts(work.Disabled(opt.NoContext || opt.NoGit), opt.Outline)
+	infos := make([]fs.FileInfo, len(paths))
+	errs := make([]error, len(paths))
+	ctxs := make([]func() *workCtx, len(paths))
+	for i, p := range paths {
+		infos[i], errs[i] = os.Stat(p)
+		if errs[i] != nil {
+			continue
+		}
+		if !infos[i].IsDir() && here == nil && !opt.NoGit {
+			here = WorkRepo()
+		}
+		ctxs[i] = cs.add(p, infos[i].IsDir(), here)
+	}
+	cs.start()
+	// rendered first, so the context: line can go on top: it names the
+	// marks that were handed out while rendering
+	var buf bytes.Buffer
 	for i, p := range paths {
 		if i > 0 {
-			fmt.Fprintln(w)
+			fmt.Fprintln(&buf)
 		}
-		st, err := os.Stat(p)
-		if err != nil {
-			fmt.Fprintf(w, "error: %s: %s\n", p, errMsg(err))
+		if errs[i] != nil {
+			fmt.Fprintf(&buf, "error: %s: %s\n", p, errMsg(errs[i]))
 			status = 2
 			continue
 		}
-		if st.IsDir() {
-			listDir(w, p, opt)
+		if infos[i].IsDir() {
+			listDir(&buf, p, opt, ctxs[i])
 		} else {
-			if here == nil && !opt.NoGit {
-				here = WorkRepo()
-			}
-			describeFile(w, p, st, opt, here)
+			describeFile(&buf, p, infos[i], opt, here, ctxs[i])
 		}
 	}
+	if l := cs.line(); l != "" {
+		fmt.Fprintln(w, l)
+	}
+	w.Write(buf.Bytes())
 	return status
 }
 
@@ -769,9 +800,11 @@ func expandable(k *node) bool {
 // expand opens directories in order of value (code first, any depth) until
 // the line budget is used up. Media and data folders open last, if at all.
 // In a workspace of projects every project first gets a one-line glance.
-func expand(root *node, opt Options) int {
+// It returns the lines used and the folders given a glance, in the order
+// they got it: the last one is the one that mattered least.
+func expand(root *node, opt Options) (used int, glances []*node) {
 	root.expanded = true
-	used := cost(root, opt.PerDir)
+	used = cost(root, opt.PerDir)
 
 	// a folder of projects: give every top-level folder a glance before
 	// spending the budget on any single one of them
@@ -789,6 +822,7 @@ func expand(root *node, opt Options) int {
 					break
 				}
 				k.glance = true
+				glances = append(glances, k)
 				used++
 			}
 		}
@@ -865,7 +899,9 @@ func expand(root *node, opt Options) int {
 			sub := opt
 			sub.Budget, sub.workspace = share, false
 			k.glance = false
-			used += expand(k, sub) - 1 // its listing replaces the glance line
+			u, g := expand(k, sub)
+			used += u - 1 // its listing replaces the glance line
+			glances = append(glances, g...)
 			k.recent = true
 		}
 	}
@@ -882,10 +918,11 @@ func expand(root *node, opt Options) int {
 		}
 		if len(c.n.kids) > 1 && !c.n.expanded {
 			c.n.glance = true
+			glances = append(glances, c.n)
 			used++
 		}
 	}
-	return used
+	return used, glances
 }
 
 // ------------------------------------------------------------ details
@@ -1129,18 +1166,27 @@ func dirLine(n *node, depth int, opt Options) string {
 	if n.recent {
 		meta = append(meta, "opened: recently active")
 	}
-	return name + " (" + strings.Join(meta, "; ") + ")" + dirMark(n)
+	return name + " (" + strings.Join(meta, "; ") + ")" + dirMark(n, opt.ctx)
 }
 
-// dirMark summarises uncommitted changes below a folder.
-func dirMark(n *node) string {
+// dirMark summarises uncommitted changes below a folder, then the files
+// below it changed only on this branch (context marks).
+func dirMark(n *node, ctx *workCtx) string {
+	m := ""
 	switch {
 	case n.changedN == 0, n.repo != nil: // a repo's own count (incl. deletions) is in its line
-		return ""
 	case n.newN == n.files:
-		return " [all new]"
+		m = " [all new]"
+	default:
+		m = fmt.Sprintf(" [%d changed]", n.changedN)
 	}
-	return fmt.Sprintf(" [%d changed]", n.changedN)
+	switch {
+	case n.gitlink:
+		m += ctx.print(n.marks)
+	case n.branchN > 0:
+		m += ctx.count(n.branchN)
+	}
+	return m
 }
 
 func repoText(nr *nestedRepo) string {
@@ -1209,7 +1255,7 @@ func fileLine(n *node, depth int, opt Options) string {
 		if t := when(n, depth, opt); t != "" {
 			b.WriteString(" (" + t + ")")
 		}
-		b.WriteString(gitMark(n.git))
+		b.WriteString(gitMark(n.git) + opt.ctx.print(n.marks))
 		return b.String()
 	}
 	b.WriteString(quote(n.name))
@@ -1242,12 +1288,12 @@ func fileLine(n *node, depth int, opt Options) string {
 	if len(extra) > 0 {
 		b.WriteString(" (" + strings.Join(extra, "; ") + ")")
 	}
-	b.WriteString(gitMark(n.git))
+	b.WriteString(gitMark(n.git) + opt.ctx.print(n.marks))
 	return b.String()
 }
 
 // changedLine lists the changed files inside a collapsed folder (--changed).
-func changedLine(n *node) string {
+func changedLine(n *node, ctx *workCtx) string {
 	var paths []string
 	var walk func(*node)
 	walk = func(d *node) {
@@ -1257,10 +1303,10 @@ func changedLine(n *node) string {
 				walk(k)
 			case k.series != nil:
 				for _, m := range k.series {
-					paths = append(paths, strings.TrimPrefix(m.rel, n.rel+"/")+gitMark(m.git))
+					paths = append(paths, strings.TrimPrefix(m.rel, n.rel+"/")+gitMark(m.git)+suffix(m.marks))
 				}
 			default:
-				paths = append(paths, strings.TrimPrefix(k.rel, n.rel+"/")+gitMark(k.git))
+				paths = append(paths, strings.TrimPrefix(k.rel, n.rel+"/")+gitMark(k.git)+suffix(k.marks))
 			}
 		}
 	}
@@ -1273,6 +1319,9 @@ func changedLine(n *node) string {
 		}
 		if i > 0 {
 			line += ", "
+		}
+		if strings.HasSuffix(p, suffix([]string{work.MarkBranch})) {
+			ctx.print([]string{work.MarkBranch}) // printed
 		}
 		line += p
 		used += len(p) + 2
@@ -1325,7 +1374,7 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 				collapsed += render(w, k, depth+1, opt)
 			case k.glance:
 				if opt.Changed {
-					fmt.Fprintln(w, indent+"  "+changedLine(k))
+					fmt.Fprintln(w, indent+"  "+changedLine(k, opt.ctx))
 				} else if g := glanceLine(k); glances[g] != "" {
 					fmt.Fprintln(w, indent+"  ↳ same layout as "+glances[g]+"/")
 				} else {
@@ -1342,6 +1391,10 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 		if len(k.symbols) > 0 {
 			var parts []string
 			used, dropped := 0, 0
+			rel, ctx := path.Join(opt.prefix, k.rel), opt.ctx
+			if isNew(k.git) {
+				ctx = nil
+			}
 			for i, s := range k.symbols {
 				if s.Kind == "define" {
 					continue
@@ -1351,7 +1404,9 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 					dropped++
 					continue
 				}
-				parts = append(parts, p)
+				// marks don't count against the width: with or without
+				// context, the same symbols are shown
+				parts = append(parts, p+ctx.marks(rel+":"+k.refs[i]))
 				used += len(p) + 1
 			}
 			line := strings.Join(parts, " ")
@@ -1376,7 +1431,11 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 				dirNames = append(dirNames, quote(k.name)+"/")
 			} else {
 				left[extKey(k.name)]++
-				fileNames = append(fileNames, quote(k.name))
+				name := quote(k.name)
+				if depth == 0 { // named, so marked
+					name += opt.ctx.print(k.marks)
+				}
+				fileNames = append(fileNames, name)
 			}
 		}
 		// the top level is always complete: every omitted name is listed.
@@ -1401,7 +1460,9 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 	return collapsed
 }
 
-func listDir(w io.Writer, dir string, opt Options) {
+// listDir prints the map of a directory. ctx is the context of its
+// repository.
+func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	s := gather(dir, opt)
 	if opt.Changed && s.repo == nil && len(s.repos) == 0 {
 		fmt.Fprintf(w, "%s\n--changed needs git: this folder is not in a git repo and contains none. Use --since 2h for recently modified files.\n", s.rootAbs)
@@ -1417,7 +1478,7 @@ func listDir(w io.Writer, dir string, opt Options) {
 	treeOpt := opt
 	treeOpt.Budget = max(opt.Budget-headerLines, 10)
 	treeOpt.workspace = s.repo == nil && projectOf(root) == nil
-	expand(root, treeOpt)
+	used, glances := expand(root, treeOpt)
 	if opt.Since == 0 && !opt.Changed {
 		addEmptyDirs(root, opt)
 	}
@@ -1577,6 +1638,31 @@ func listDir(w io.Writer, dir string, opt Options) {
 	if total == 0 && len(root.kids) == 0 {
 		fmt.Fprintln(w, "(nothing to show)")
 		return
+	}
+	// the context is waited for only now: it loads (git, outlines of the
+	// changed files) while glint reads the tree
+	if c := ctx(); c != nil {
+		if prefix, ok := c.rel(s.rootAbs); ok {
+			markTree(root, c, prefix)
+			opt.ctx, opt.prefix = c, prefix
+			// The context: line counts against the budget. A dry run of the
+			// rendering says whether this map prints a mark; if so and the
+			// tree is full, it gives back its last glance, a line of
+			// detail. In --changed a glance lists changed files, entries
+			// that are never given up: the line goes on top of the budget.
+			printed := c.printed
+			render(io.Discard, root, 0, opt)
+			if c.printed > printed || c.st.Changes.Skipped != "" {
+				if c.claimLine() && used >= treeOpt.Budget && !opt.Changed {
+					for _, g := range slices.Backward(glances) {
+						if g.glance {
+							g.glance = false
+							break
+						}
+					}
+				}
+			}
+		}
 	}
 	collapsed := render(w, root, 0, opt)
 	if collapsed > 0 {
@@ -1772,10 +1858,22 @@ func fileNode(abs string, st fs.FileInfo, opt Options) *node {
 
 // describeFile is the single-file view: facts plus an outline with line
 // numbers. here returns the working directory's repository (nil with
-// --no-git).
-func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info) {
+// --no-git), ctx the context of the file's repository.
+func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info, ctx func() *workCtx) {
 	abs, _ := filepath.Abs(path)
 	n := fileNode(abs, st, opt)
+	c := ctx()
+	rel, inRepo := c.rel(abs)
+	if inRepo {
+		n.marks = c.fileMarks(rel)
+	}
+	c.print(n.marks) // the header prints them
+	mark := func(name string) string {
+		if !inRepo || isNew(n.git) {
+			return ""
+		}
+		return c.marks(rel + ":" + name)
+	}
 	line := headerPath(abs, here) + " — " + strings.TrimPrefix(fileLine(n, 1, Options{}), quote(n.name)+" ")
 	if opt.Long {
 		line += ", " + n.mode.String()
@@ -1806,7 +1904,7 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here fu
 			continue
 		}
 		if shownN < maxSyms {
-			fmt.Fprintf(w, "  %d %s\n", s.Line, symbolLine(s, names[i]))
+			fmt.Fprintf(w, "  %d %s%s\n", s.Line, symbolLine(s, names[i]), mark(names[i]))
 		}
 		shownN++
 	}
@@ -1819,6 +1917,9 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here fu
 		if len(list) > 40 {
 			extra = fmt.Sprintf(" +%d more", len(list)-40)
 			list = list[:40]
+		}
+		for i, name := range list {
+			list[i] += mark(name)
 		}
 		fmt.Fprintf(w, "  #defines (%d): %s%s\n", len(defines), strings.Join(list, " "), extra)
 	}

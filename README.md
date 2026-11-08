@@ -139,6 +139,26 @@ crates/aurora-render/src/gpu.rs — 103L (last commit 2mo ago: Initial path trac
 
 The header gives the path relative to the root of the repository you run glint in (absolute for a file outside it). When a signature doesn't show a symbol's name as it is, the name comes first: `187 globSet.match  func (g globSet) match(p string) bool` for a method, `5 init#2  func init()` for a second definition with the same name. The header path, a colon and that name make a ref (see [Refs](#refs)).
 
+The map and the outline also mark what the current work changed, the way seek, recap and crux do (see [context](https://github.com/Vaspyyy/prism/blob/main/docs/context.md) in Prism):
+
+```console
+$ glint -A --outline internal
+context: 1 changed symbol vs HEAD, 1 symbol changed on this branch since 453ae32
+…
+files/ (1 file, 183B; newest file 2m ago) [1 changed]
+  files.go 16L [M]
+    ↳ List:4 init#1:8 init#2:10 [changed] Repo:12 Repo.Open:14
+render/ (1 file, 63B; newest file 5m ago) [1 branch]
+  render.go 7L [branch]
+    ↳ Draw:3 [branch] Clear:7
+```
+
+- Files committed on this branch since it left the default branch are marked `[branch]`, and folders count them (`[1 branch]`). Files with uncommitted changes keep their git status (`[M]`, `[new]`, …), which says more than a mark would.
+- Symbols get `[changed]` (uncommitted) or `[branch]`, in `glint -A <file>` and with `--outline`. The symbols of a new, added or renamed file aren't marked: its `[new]`, `[A]` or `[R]` already says they're all new at that path.
+- The `context:` line at the top says what the marks are based on, one line for the whole run. It counts against the budget by taking the place of a glance line, never of a listed file.
+
+Context only marks: the same entries are listed with it or without it. It costs a few git commands, which run while glint reads the tree and look only at what's listed: `glint -A <file>` asks git about that file, and a map without `--outline` only needs to know which files changed. Plain listings (`glint -l`, `glint -T`, …) never load it, and `--no-context` or `PRISM_NO_CONTEXT=1` turns it off, for scripts and tests that compare outputs.
+
 On a Rust workspace with about 4,000 files, `glint -A` came to roughly 2,900 tokens. For comparison, `tree -L 2` was about 13,000 and `git ls-files` about 50,000, and neither includes git state or line counts. The format was refined over several rounds of comparisons in which different models used glint alongside `ls`, `tree`, `git` and `du` on real projects.
 
 To have your agent use it, add something like this to its instructions (for example `AGENTS.md`):
@@ -164,7 +184,7 @@ Paths are relative to the repository root. The format is specified in [Prism](ht
 `--json` prints one JSON document per run: the envelope glint shares with seek, recap and crux, specified in [Prism](https://github.com/Vaspyyy/prism/blob/main/docs/output.md). It has `schema`, `tool`, `version`, `args` and `repo` (root, branch, HEAD, uncommitted changes), then `result`, or `error` when the run failed.
 
 - `glint --json [paths]` puts the listing in `result.items` (always present, `[]` for an empty folder): each entry's name, path (as listed, relative to `result.dir`, the working directory, like `ls`), type, kind, size, mode, modification time, owner, git status and a symlink's `link_target`, plus the description, last commit or folder size with `-p`, `-c` and `--du`. With `-T`, folders hold their contents in `children`. A file given without `-A` is listed as one entry.
-- `glint -A --json <file>` puts one file in `result.file`: its `path` (relative to the repository root, absolute outside it, like the text header), `lines`, `size`, `modified`, `mode`, `kind` (`image`, `binary`, `vendored` or `generated`; left out for plain text), `image` (an image's size), `link_target`, `git` (`modified`, `untracked`, `ignored`, …; left out when the file is clean), `last_commit` and `symbols`. Each symbol has a `ref` that seek, recap and crux accept (`internal/files/files.go:globSet.match`). The `commits` count in `last_commit` is only counted with `-H`, in listings too.
+- `glint -A --json <file>` puts one file in `result.file`: its `path` (relative to the repository root, absolute outside it, like the text header), `lines`, `size`, `modified`, `mode`, `kind` (`image`, `binary`, `vendored` or `generated`; left out for plain text), `image` (an image's size), `link_target`, `git` (`modified`, `untracked`, `ignored`, …; left out when the file is clean), `last_commit`, `marks` (`changed` or `branch` when the current work changed the file) and `symbols`. Each symbol has a `ref` that seek, recap and crux accept (`internal/files/files.go:globSet.match`), and `marks` when it changed. The envelope's `context` says what the marks are based on, counting that file's changes; it's `null` with `--no-context` or `--no-git`, and for listings, which don't load context. The `commits` count in `last_commit` is only counted with `-H`, in listings too.
 - Failures are an envelope too, with `error.code` `usage` (bad arguments) or `failed` (anything else, such as a missing path), and glint exits with the same code as without `--json`. A missing path fails the whole run instead of listing the other paths.
 - Views that show more than a listing (`-P`, `-C`, `-M`, `--thumbs`, `-i`, `-W`, and `-A` with a directory) have no JSON output and fail with a `usage` error. `--help`, `--version` and `--init` still print text.
 - Lists are capped at 10,000 entries, and `truncated` says when that cut something.
@@ -179,7 +199,7 @@ $ glint -A --json internal/textw/textw.go
   "version": "0.7.0",
   "args": ["-A", "--json", "internal/textw/textw.go"],
   "repo": { "root": "/home/ada/projects/glint", "git": true, "branch": "main", "dirty": false, … },
-  "context": null,
+  "context": { "applied": [], "changed": { "base": "HEAD", "files": 0, "uncommitted": 0, "branch": 0 } },
   "result": {
     "file": {
       "path": "internal/textw/textw.go",

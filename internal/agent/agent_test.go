@@ -389,7 +389,7 @@ func TestFileJSONMatchesText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, truncated := File(p, st, Options{}, nil, 100)
+	f, truncated, _ := File(p, st, Options{}, nil, 100)
 	if truncated != nil || f.Path != p || f.Lines != 4 {
 		t.Fatalf("got %+v, truncated %+v", f, truncated)
 	}
@@ -405,7 +405,7 @@ func TestFileJSONMatchesText(t *testing.T) {
 		t.Errorf("text view disagrees:\n%s", text)
 	}
 
-	f, truncated = File(p, st, Options{}, nil, 3)
+	f, truncated, _ = File(p, st, Options{}, nil, 3)
 	if len(f.Symbols) != 3 || truncated == nil || truncated.Shown != 3 || truncated.Total != 4 {
 		t.Errorf("limit 3: %d symbols, truncated %+v", len(f.Symbols), truncated)
 	}
