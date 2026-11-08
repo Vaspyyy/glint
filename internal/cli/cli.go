@@ -191,11 +191,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	a := &app{out: stdout, errOut: stderr, args: given}
 	a.flags = newFlagSet(&a.o)
-	// until the flags are parsed, look for --json in the arguments
-	jsonOut := wantsJSON(args)
+	// until the flags are parsed, look for --json and --no-git in the arguments
+	jsonOut, noGit := boolFlag(args, "json"), boolFlag(args, "no-git")
+	failJSON := func(code string, err error) int {
+		a.o.noGit = a.o.noGit || noGit
+		return a.failJSON(a.out, code, err.Error(), 2)
+	}
 	die := func(err error) int {
 		if jsonOut || a.o.json {
-			return a.failJSON(a.out, report.CodeUsage, err.Error(), 2)
+			return failJSON(report.CodeUsage, err)
 		}
 		fmt.Fprintf(a.errOut, "glint: %v\nTry 'glint --help'.\n", err)
 		return 2
@@ -216,7 +220,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if useCfg {
 		if err := config.Load(cfgPath, a.flags); err != nil {
 			if jsonOut || a.o.json {
-				return a.failJSON(a.out, report.CodeFailed, err.Error(), 2)
+				return failJSON(report.CodeFailed, err)
 			}
 			return die(err)
 		}

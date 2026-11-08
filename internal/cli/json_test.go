@@ -434,6 +434,9 @@ func TestJSONErrors(t *testing.T) {
 		{[]string{"-A", "--json", "--no-git"}, report.CodeUsage}, // the working directory is a directory
 		{[]string{"-A", "--json", "--no-git", "a.go", "b.go"}, report.CodeUsage},
 		{[]string{"-A", "--json", "--no-git", "-M", "a.go"}, report.CodeUsage},
+		{[]string{"-A", "--json", "--no-git", "-P", "a.go"}, report.CodeUsage},
+		{[]string{"-A", "--json", "--no-git", "-C", "a.go"}, report.CodeUsage},
+		{[]string{"-A", "--json", "--no-git", "--thumbs", "a.go"}, report.CodeUsage},
 	} {
 		env, status := runJSON(t, c.args...)
 		if status != 2 {
@@ -465,17 +468,44 @@ func TestJSONRefusesInteractiveViews(t *testing.T) {
 		var out bytes.Buffer
 		a := &app{o: o, out: &out, errOut: &out, args: []string{"--json"}}
 		a.flags = newFlagSet(&options{})
-		if status := a.listJSON(); status != 2 {
-			t.Errorf("%+v: exit %d", o, status)
-		}
-		env, err := report.Check(out.Bytes())
-		if err != nil || env.Error == nil || env.Error.Code != report.CodeUsage {
-			t.Errorf("%+v: %v\n%s", o, err, out.String())
+		for name, entry := range map[string]func() int{"listJSON": a.listJSON, "fileJSON": a.fileJSON} {
+			out.Reset()
+			if status := entry(); status != 2 {
+				t.Errorf("%s %+v: exit %d", name, o, status)
+			}
+			env, err := report.Check(out.Bytes())
+			if err != nil || env.Error == nil || env.Error.Code != report.CodeUsage {
+				t.Errorf("%s %+v: %v\n%s", name, o, err, out.String())
+			}
 		}
 	}
 }
 
-func TestWantsJSON(t *testing.T) {
+// --no-git holds for failures found before the flags are parsed too.
+func TestJSONErrorsHonorNoGit(t *testing.T) {
+	cfg := isolate(t)
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "a.go"), "package a\n")
+	gitInit(t, proj)
+	t.Chdir(proj)
+
+	env, _ := runJSON(t, "--bogus", "--no-git", "--json")
+	if env.Error == nil || env.Repo.Git {
+		t.Errorf("bad flag before --no-git: error %+v, repo %+v", env.Error, env.Repo)
+	}
+	write(t, filepath.Join(cfg, "glint", "config.toml"), "theme = \n")
+	env, _ = runJSON(t, "--json", "--no-git")
+	if env.Error == nil || env.Repo.Git {
+		t.Errorf("broken config: error %+v, repo %+v", env.Error, env.Repo)
+	}
+	// without --no-git the envelope says where it ran
+	env, _ = runJSON(t, "--json")
+	if !env.Repo.Git {
+		t.Errorf("broken config without --no-git: repo %+v", env.Repo)
+	}
+}
+
+func TestBoolFlag(t *testing.T) {
 	for _, c := range []struct {
 		args []string
 		want bool
@@ -486,8 +516,8 @@ func TestWantsJSON(t *testing.T) {
 		{[]string{"--", "--json"}, false},
 		{[]string{"-l"}, false},
 	} {
-		if got := wantsJSON(c.args); got != c.want {
-			t.Errorf("wantsJSON(%q) = %v, want %v", c.args, got, c.want)
+		if got := boolFlag(c.args, "json"); got != c.want {
+			t.Errorf("boolFlag(%q, \"json\") = %v, want %v", c.args, got, c.want)
 		}
 	}
 }

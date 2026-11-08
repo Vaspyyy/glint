@@ -20,17 +20,17 @@ import (
 // result.items, or with -A and a file that file's outline as result.file.
 // Failures are an envelope too, with the exit code text mode has.
 
-// wantsJSON reports whether args turn on --json. It's for errors found
-// before the flags are parsed, or while parsing them.
-func wantsJSON(args []string) bool {
+// boolFlag reports whether args turn on the boolean flag --name. It's for
+// errors found before the flags are parsed, or while parsing them.
+func boolFlag(args []string, name string) bool {
 	on := false
 	for _, arg := range args {
 		if arg == "--" {
 			break
 		}
-		if v, ok := strings.CutPrefix(arg, "--json="); ok {
+		if v, ok := strings.CutPrefix(arg, "--"+name+"="); ok {
 			on, _ = strconv.ParseBool(v)
-		} else if arg == "--json" {
+		} else if arg == "--"+name {
 			on = true
 		}
 	}
@@ -100,9 +100,9 @@ func (a *app) failJSON(w io.Writer, code, message string, status int) int {
 	return status
 }
 
-// listJSON is --json without -A: the listing, in the envelope. Views that
-// show more than a listing have nothing to print.
-func (a *app) listJSON() int {
+// noView says why --json can't be combined with the view asked for, or
+// returns "": views that show more than a listing have no JSON output.
+func (a *app) noView() string {
 	o := &a.o
 	for _, v := range []struct {
 		on         bool
@@ -119,8 +119,16 @@ func (a *app) listJSON() int {
 			if v.hint == "" {
 				v.hint = "run it without --json"
 			}
-			return a.failJSON(a.out, report.CodeUsage, v.flag+" has no JSON output; "+v.hint, 2)
+			return v.flag + " has no JSON output; " + v.hint
 		}
+	}
+	return ""
+}
+
+// listJSON is --json without -A: the listing, in the envelope.
+func (a *app) listJSON() int {
+	if msg := a.noView(); msg != "" {
+		return a.failJSON(a.out, report.CodeUsage, msg, 2)
 	}
 	a.workRepo()                        // look the repository up while listing
 	return a.list(a.out, a.termWidth()) // one write: the envelope
@@ -131,6 +139,9 @@ func (a *app) fileJSON() int {
 	o := &a.o
 	usage := func(format string, args ...any) int {
 		return a.failJSON(a.out, report.CodeUsage, fmt.Sprintf(format, args...), 2)
+	}
+	if msg := a.noView(); msg != "" {
+		return usage("%s", msg)
 	}
 	if o.since != "" {
 		if _, err := parseAge(o.since); err != nil {
