@@ -145,10 +145,10 @@ func headerPath(abs string, here func() *repo.Info) string {
 func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limit int) (f report.GlintFile, truncated *report.Truncated, ctx *report.Context) {
 	opt.defaults()
 	abs, _ := filepath.Abs(path)
-	// JSON says what the whole repository's context is, so the changes
-	// are always loaded
-	load := newContexts(work.Disabled(opt.NoContext || opt.NoGit)).start(abs, false, here, nil)
-	n := fileNode(abs, st, opt, nil)
+	cs := newContexts(work.Disabled(opt.NoContext || opt.NoGit), false)
+	load := cs.add(abs, false, here)
+	cs.start()
+	n := fileNode(abs, st, opt)
 	c := load()
 	f = report.GlintFile{
 		Path: headerPath(abs, here), Lines: n.lines, Size: n.size, Modified: n.mtime, Mode: n.mode.String(),
@@ -156,6 +156,10 @@ func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limi
 	}
 	if c := n.commit; c != nil {
 		f.Commit = &report.GlintCommit{Hash: c.Hash, Subject: c.Subject, Author: c.Author, Time: c.Time, Count: c.Count}
+	}
+	rel, inRepo := c.rel(abs)
+	if inRepo {
+		f.Marks = c.st.FileMarks(rel) // "changed" too: JSON doesn't lean on the git status
 	}
 	if len(n.symbols) == 0 { // like the text view: no outline for binary, huge or symlinked files
 		return f, nil, c.st.Context()
@@ -168,7 +172,7 @@ func File(path string, st fs.FileInfo, opt Options, here func() *repo.Info, limi
 	}
 	// a symbol's ref names the file as the header does; its marks need the
 	// path in the file's own repository
-	if rel, ok := c.rel(abs); ok {
+	if inRepo {
 		for i := range syms {
 			syms[i].Marks = c.st.Marks(rel + ":" + strings.TrimPrefix(syms[i].Ref, f.Path+":"))
 		}

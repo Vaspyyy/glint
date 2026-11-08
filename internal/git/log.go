@@ -229,22 +229,3 @@ func (r *Repo) Weekly(n int) []int {
 	}
 	return out
 }
-
-// MergeBase returns the best common ancestor of two commits, or "" if
-// there's none or git fails.
-func MergeBase(root, a, b string) string {
-	out, err := gitCmd(root, "merge-base", a, b).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// Differs reports whether anything at path (repo-relative, literal; "."
-// for everything) differs between two commits. When git fails it reports
-// true, so a caller that skips work on false never skips by mistake.
-func Differs(root, from, to, path string) bool {
-	cmd := gitCmd(root, "diff", "--quiet", "--no-renames", "--no-ext-diff", from, to, "--", path)
-	cmd.Env = append(cmd.Env, "GIT_LITERAL_PATHSPECS=1")
-	return cmd.Run() != nil
-}

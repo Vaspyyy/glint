@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 
 	"github.com/Vaspyyy/glint/internal/git"
+	"github.com/Vaspyyy/prism/changes"
 	"github.com/Vaspyyy/prism/repo"
 	"github.com/Vaspyyy/prism/work"
 )
@@ -38,14 +40,19 @@ func (c *workCtx) rel(abs string) (string, bool) {
 	return c.info.Rel(abs)
 }
 
-// fileMarks returns what the map prints after a file (repo-relative): " [branch]"
-// when it changed only on this branch, else "" (uncommitted changes show
-// as its git status).
+// fileMarks returns what the text views print after a file (repo-relative):
+// " [branch]" when it changed only on this branch, else "" (uncommitted
+// changes show as its git status).
 func (c *workCtx) fileMarks(rel string) string {
-	if c == nil || c.st.Changes.FileMark(rel) != work.MarkBranch {
+	if c == nil {
 		return ""
 	}
-	return work.Suffix(c.st.FileMarks(rel))
+	m := c.st.PeekFile(rel)
+	if !slices.Equal(m, []string{work.MarkBranch}) {
+		return ""
+	}
+	c.st.Show(m...)
+	return work.Suffix(m)
 }
 
 // marks returns what is printed after a symbol: " [changed]", " [branch]"
@@ -57,141 +64,120 @@ func (c *workCtx) marks(ref string) string {
 	return work.Suffix(c.st.Marks(ref))
 }
 
-// localMarks reports whether a file with this git status can show a mark
-// for its uncommitted changes: on its symbols, unless it's new, and only if
-// it's still there. (Its file mark is its git status.)
-func localMarks(s git.Status) bool {
-	return !s.Clean() && !s.Ignored() && !isNew(s) && s.X != 'D' && s.Y != 'D'
-}
-
 // isNew reports whether every line of a file is new: it's untracked or
 // added. Its git status ([new], [A]) says so, so the text views leave
 // its symbols unmarked rather than marking every one of them.
 func isNew(s git.Status) bool { return s.Untracked() || s.X == 'A' }
 
-// contexts loads the context of each repository a run lists, once per
-// repository, in the background.
+// contexts loads the context of the repositories a run lists: one load
+// per repository, scoped to the paths listed in it, so a big repository's
+// git status only looks at those. A map without an outline only needs
+// file marks, so it skips the hunks and outlines.
 type contexts struct {
-	off   bool
-	mu    sync.Mutex
-	roots map[string]func() *workCtx
-	used  []*workCtx // in the order they were first waited for: one context: line each
+	off     bool
+	outline bool // maps show symbols (--outline), so they need symbol detail too
+	byRoot  map[string]*group
+	groups  []*group
+	mu      sync.Mutex
+	used    []*workCtx // in the order they were first waited for: one context: line each
+}
+
+// group is the paths of one repository.
+type group struct {
+	paths []string          // absolute
+	files bool              // a file is listed: its symbols are shown
+	here  func() *repo.Info // the working directory's repository, when it's this one
+	get   func() *workCtx
 }
 
 // newContexts is a run's contexts. With off (--no-context,
 // PRISM_NO_CONTEXT=1 or --no-git) nothing is loaded and nothing marked.
-func newContexts(off bool) *contexts {
-	return &contexts{off: off, roots: map[string]func() *workCtx{}}
+func newContexts(off, outline bool) *contexts {
+	return &contexts{off: off, outline: outline, byRoot: map[string]*group{}}
 }
 
-// start begins loading the context of the repository containing path (a
-// directory or file glint lists) and returns a function that waits for
-// it. It runs git, so it runs next to glint's own work. here, if not nil,
-// returns the working directory's repository, which is looked up anyway:
-// when path is in it too, its lookup is shared rather than run twice.
-//
-// quiet, if not nil, waits for glint's own git status of path and reports
-// whether no uncommitted change in it can show a mark (see localMarks).
-// When this branch's commits didn't change path either, nothing listed
-// can get a mark, so the changes aren't loaded. That saves a git status
-// of the whole repository, which in a big one costs more than everything
-// else glint -A <file> does (in a 31,000-file repository about 60 ms,
-// against 20 ms).
-func (cs *contexts) start(path string, dir bool, here func() *repo.Info, quiet func() bool) func() *workCtx {
+// add registers a listed path (a directory, or a file) and returns a
+// function that waits for its repository's context, once start has run.
+// here, if not nil, returns the working directory's repository, which is
+// looked up anyway: when path is in it too, that lookup is shared rather
+// than run twice.
+func (cs *contexts) add(path string, dir bool, here func() *repo.Info) func() *workCtx {
 	if cs.off {
 		c := &workCtx{st: work.Load(nil, work.Changes, true)}
 		return func() *workCtx { return c }
 	}
-	parent := path
-	if !dir {
-		parent = filepath.Dir(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
 	}
-	if abs, err := filepath.Abs(parent); err == nil && git.FindRoot(abs) == "" {
+	parent := abs
+	if !dir {
+		parent = filepath.Dir(abs)
+	}
+	root := git.FindRoot(parent)
+	if root == "" {
 		c := &workCtx{st: work.Load(nil, work.Changes, false)} // not in a repository: no git to run
 		return func() *workCtx { return c }
 	}
-	if here == nil || !sameRepo(".", parent) {
-		here = func() *repo.Info {
-			info, err := repo.Detect(parent)
-			if err != nil {
-				return nil
-			}
-			return info
-		}
+	g := cs.byRoot[root]
+	if g == nil {
+		g = &group{}
+		cs.byRoot[root] = g
+		cs.groups = append(cs.groups, g)
 	}
-	ch := make(chan func() *workCtx, 1)
-	go func() {
-		info := here()
-		if info == nil || !info.Git {
-			c := &workCtx{info: info, st: work.Load(info, work.Changes, false)}
-			ch <- func() *workCtx { return c }
-			return
-		}
-		if quiet != nil && !branchTouched(info, path) && quiet() {
-			c := &workCtx{info: info, st: work.Load(info, 0, false)}
-			ch <- func() *workCtx { return c }
-			return
-		}
-		cs.mu.Lock()
-		load, ok := cs.roots[info.Root]
-		if !ok {
-			load = sync.OnceValue(func() *workCtx {
-				return &workCtx{info: info, st: work.Load(info, work.Changes, false)}
-			})
-			cs.roots[info.Root] = load
-		}
-		cs.mu.Unlock()
-		load()
-		ch <- load
-	}()
-	return sync.OnceValue(func() *workCtx {
-		c := (<-ch)()
-		cs.mu.Lock()
-		if !slices.Contains(cs.used, c) {
+	g.paths = append(g.paths, abs)
+	g.files = g.files || !dir
+	if here != nil && g.here == nil && sameRepo(".", parent) {
+		g.here = here
+	}
+	return func() *workCtx { return g.get() }
+}
+
+// start begins loading every repository's context in the background: it
+// runs git, so it runs next to glint's own work.
+func (cs *contexts) start() {
+	for _, g := range cs.groups {
+		ch := make(chan *workCtx, 1)
+		go func() { ch <- g.load(!g.files && !cs.outline) }()
+		g.get = sync.OnceValue(func() *workCtx {
+			c := <-ch
+			cs.mu.Lock()
 			cs.used = append(cs.used, c)
+			cs.mu.Unlock()
+			return c
+		})
+	}
+}
+
+// load reads the context of a group's repository, scoped to its paths.
+func (g *group) load(filesOnly bool) *workCtx {
+	var info *repo.Info
+	if g.here != nil {
+		info = g.here()
+	} else {
+		dir := g.paths[0]
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			dir = filepath.Dir(dir)
 		}
-		cs.mu.Unlock()
-		return c
-	})
-}
-
-// branchTouched reports whether the commits prism/changes marks [branch]
-// changed anything at path: on a branch other than the default one, the
-// commits since the merge base with the default branch. Two small git
-// commands, against prism's git status of the whole repository.
-func branchTouched(info *repo.Info, path string) bool {
-	if info.Branch == "" || info.DefaultRef == "" || info.Branch == info.DefaultBranch || info.Head == "" {
-		return false
+		info, _ = repo.Detect(dir)
 	}
-	rel, ok := info.Rel(path)
-	if !ok {
-		return true
+	if info == nil || !info.Git {
+		return &workCtx{info: info, st: work.Load(info, work.Changes, false)}
 	}
-	base := git.MergeBase(info.Root, "HEAD", info.DefaultRef)
-	return base != "" && base != info.Head && git.Differs(info.Root, base, "HEAD", rel)
-}
-
-// flag is a bool that is set once and can be waited for.
-type flag struct {
-	once sync.Once
-	done chan struct{}
-	v    bool
-}
-
-func newFlag() *flag { return &flag{done: make(chan struct{})} }
-
-// set sets the flag; only the first call counts.
-func (f *flag) set(v bool) {
-	f.once.Do(func() {
-		f.v = v
-		close(f.done)
-	})
-}
-
-// wait waits for the flag to be set and returns it.
-func (f *flag) wait() bool {
-	<-f.done
-	return f.v
+	var paths []string
+	for _, p := range g.paths {
+		rel, ok := info.Rel(p)
+		if !ok {
+			continue
+		}
+		if rel == "." {
+			paths = nil // the whole repository
+			break
+		}
+		paths = append(paths, rel)
+	}
+	st := work.LoadWith(info, work.Options{Layers: work.Changes, Changes: changes.Options{Paths: paths, FilesOnly: filesOnly}})
+	return &workCtx{info: info, st: st}
 }
 
 // sameRepo reports whether two directories are in the same work tree,

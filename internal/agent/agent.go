@@ -124,7 +124,23 @@ func Run(w io.Writer, paths []string, opt Options) int {
 	opt.defaults()
 	status := 0
 	var here func() *repo.Info // the working directory's repository, looked up for the first file
-	cs := newContexts(work.Disabled(opt.NoContext || opt.NoGit))
+	// every path's context is registered first, so a repository is loaded
+	// once, scoped to all the paths listed in it
+	cs := newContexts(work.Disabled(opt.NoContext || opt.NoGit), opt.Outline)
+	infos := make([]fs.FileInfo, len(paths))
+	errs := make([]error, len(paths))
+	ctxs := make([]func() *workCtx, len(paths))
+	for i, p := range paths {
+		infos[i], errs[i] = os.Stat(p)
+		if errs[i] != nil {
+			continue
+		}
+		if !infos[i].IsDir() && here == nil && !opt.NoGit {
+			here = WorkRepo()
+		}
+		ctxs[i] = cs.add(p, infos[i].IsDir(), here)
+	}
+	cs.start()
 	// rendered first, so the context: line can go on top: it names the
 	// marks that were handed out while rendering
 	var buf bytes.Buffer
@@ -132,20 +148,15 @@ func Run(w io.Writer, paths []string, opt Options) int {
 		if i > 0 {
 			fmt.Fprintln(&buf)
 		}
-		st, err := os.Stat(p)
-		if err != nil {
-			fmt.Fprintf(&buf, "error: %s: %s\n", p, errMsg(err))
+		if errs[i] != nil {
+			fmt.Fprintf(&buf, "error: %s: %s\n", p, errMsg(errs[i]))
 			status = 2
 			continue
 		}
-		quiet := newFlag()
-		if st.IsDir() {
-			listDir(&buf, p, opt, cs.start(p, true, nil, quiet.wait), quiet.set)
+		if infos[i].IsDir() {
+			listDir(&buf, p, opt, ctxs[i])
 		} else {
-			if here == nil && !opt.NoGit {
-				here = WorkRepo()
-			}
-			describeFile(&buf, p, st, opt, here, cs.start(p, false, here, quiet.wait), quiet.set)
+			describeFile(&buf, p, infos[i], opt, here, ctxs[i])
 		}
 	}
 	for _, l := range cs.lines() {
@@ -1443,12 +1454,9 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 }
 
 // listDir prints the map of a directory. ctx is the context of its
-// repository; quiet is told whether no uncommitted change in it can show
-// a mark: files show their git status instead, so only symbols can, with
-// --outline.
-func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx, quiet func(bool)) {
+// repository.
+func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	s := gather(dir, opt)
-	quiet(!opt.Outline || !slices.ContainsFunc(s.changes, func(c git.Change) bool { return localMarks(c.Status) }))
 	if opt.Changed && s.repo == nil && len(s.repos) == 0 {
 		fmt.Fprintf(w, "%s\n--changed needs git: this folder is not in a git repo and contains none. Use --since 2h for recently modified files.\n", s.rootAbs)
 		return
@@ -1809,9 +1817,8 @@ func groupIgnored(paths []string) []string {
 
 // fileNode reads what the single-file view shows about a file: its facts,
 // line count and (the first symbols of) its outline, and with git its status
-// and last commit. quiet, if not nil, is told as soon as the git status
-// says whether the file's uncommitted changes, if any, can't show a mark.
-func fileNode(abs string, st fs.FileInfo, opt Options, quiet func(bool)) *node {
+// and last commit.
+func fileNode(abs string, st fs.FileInfo, opt Options) *node {
 	n := &node{name: filepath.Base(abs), abs: abs, mode: st.Mode(), size: st.Size(), mtime: st.ModTime()}
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(abs)), "/") {
 		if vendorDirs[strings.ToLower(part)] {
@@ -1827,11 +1834,6 @@ func fileNode(abs string, st fs.FileInfo, opt Options, quiet func(bool)) *node {
 	}
 	if repo != nil {
 		n.git = repo.Status(abs)
-	}
-	if quiet != nil {
-		quiet(!localMarks(n.git))
-	}
-	if repo != nil {
 		if !n.git.Untracked() && !n.git.Ignored() {
 			hist := repo.History(filepath.Dir(abs), []string{n.name}, opt.Heat)
 			n.commit = hist[n.name]
@@ -1845,11 +1847,10 @@ func fileNode(abs string, st fs.FileInfo, opt Options, quiet func(bool)) *node {
 
 // describeFile is the single-file view: facts plus an outline with line
 // numbers. here returns the working directory's repository (nil with
-// --no-git), ctx the context of the file's repository. quiet is as for
-// fileNode.
-func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info, ctx func() *workCtx, quiet func(bool)) {
+// --no-git), ctx the context of the file's repository.
+func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here func() *repo.Info, ctx func() *workCtx) {
 	abs, _ := filepath.Abs(path)
-	n := fileNode(abs, st, opt, quiet)
+	n := fileNode(abs, st, opt)
 	c := ctx()
 	rel, inRepo := c.rel(abs)
 	if inRepo {

@@ -63,20 +63,29 @@ func marks(f *report.GlintFile) map[string][]string {
 func TestFileJSONContext(t *testing.T) {
 	contextRepo(t)
 
+	// the context covers the file shown
 	env, _ := runJSON(t, "-A", "--json", "files.go")
 	c := env.Context
 	if c == nil || !slices.Equal(c.Applied, []string{"mark"}) || c.Changed == nil {
 		t.Fatalf("context: %+v", c)
 	}
-	if ch := c.Changed; ch.Base != "HEAD" || ch.BranchBase == "" || ch.Files != 2 || ch.Uncommitted != 1 || ch.Branch != 1 {
+	if ch := c.Changed; ch.Base != "HEAD" || ch.BranchBase == "" || ch.Files != 1 || ch.Uncommitted != 1 || ch.Branch != 0 {
 		t.Errorf("context.changed: %+v", ch)
 	}
-	if got := marks(glintResult(t, env).File); !slices.Equal(got["files.go:init#2"], []string{"changed"}) || got["files.go:init#1"] != nil {
+	f := glintResult(t, env).File
+	if got := marks(f); !slices.Equal(got["files.go:init#2"], []string{"changed"}) || got["files.go:init#1"] != nil {
 		t.Errorf("marks: %v", got)
 	}
+	if !slices.Equal(f.Marks, []string{"changed"}) {
+		t.Errorf("file marks: %v", f.Marks)
+	}
 	env, _ = runJSON(t, "-A", "--json", "render.go")
-	if got := marks(glintResult(t, env).File); !slices.Equal(got["render.go:Draw"], []string{"branch"}) || got["render.go:Clear"] != nil {
+	f = glintResult(t, env).File
+	if got := marks(f); !slices.Equal(got["render.go:Draw"], []string{"branch"}) || got["render.go:Clear"] != nil {
 		t.Errorf("marks: %v", got)
+	}
+	if ch := env.Context.Changed; ch.Files != 1 || ch.Uncommitted != 0 || ch.Branch != 1 || !slices.Equal(f.Marks, []string{"branch"}) {
+		t.Errorf("render.go: context.changed %+v, file marks %v", ch, f.Marks)
 	}
 
 	// off: context is null and nothing is marked
@@ -181,60 +190,48 @@ func TestListingsLoadNoContext(t *testing.T) {
 	}
 }
 
-// When glint's own git status finds what it lists clean and this branch
-// didn't change it either, nothing can get a mark, so the text views don't
-// load the changes (a git status of the whole repository). JSON always
-// says what changed.
-func TestContextSkippedWhenNothingToMark(t *testing.T) {
+// Each view loads only what it shows: git status and the branch's files
+// are limited to the listed paths, and a map without an outline loads file
+// marks only (no hunks).
+func TestContextLoadsWhatItShows(t *testing.T) {
 	dir := contextRepo(t)
-	gitRun(t, dir, "stash", "-q")
-	gitRun(t, dir, "checkout", "-q", "main")
 	write(t, filepath.Join(dir, "sub", "other.go"), "package sub\n\nfunc Other() {}\n")
-	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "add", "sub")
 	gitRun(t, dir, "commit", "-qm", "sub")
+	write(t, filepath.Join(dir, "sub", "other.go"), "package sub\n\nfunc Other() { println(3) }\n")
 	run := logGit(t)
-	for _, args := range [][]string{{"-A"}, {"-A", "--outline"}, {"-A", "files.go"}} {
-		if out, log := run(args...); loadsChanges(log) || strings.HasPrefix(out, "context:") {
-			t.Errorf("clean: glint %q loaded the changes; git ran:\n%s\noutput:\n%s", args, log, out)
+	status := func(log, spec string) bool {
+		for _, l := range strings.Split(log, "\n") {
+			if strings.HasPrefix(l, "status --porcelain -z --no-renames --untracked-files=all") {
+				return strings.HasSuffix(l, "--ignore-submodules=dirty"+spec)
+			}
 		}
+		return false
 	}
-	env, _ := runJSON(t, "-A", "--json", "files.go")
-	if env.Context == nil || env.Context.Changed == nil || env.Context.Changed.Files != 0 {
-		t.Errorf("clean, JSON: context %+v", env.Context)
-	}
+	hunks := func(log string) bool { return strings.Contains(log, "diff -U0") }
 
-	write(t, filepath.Join(dir, "files.go"), "package demo\n\nfunc init() {}\n\nfunc init() { println(3) }\n")
-	// files show their git status, so only the outline marks uncommitted changes
-	if out, log := run("-A"); loadsChanges(log) || strings.HasPrefix(out, "context:") || !strings.Contains(out, "files.go 5L (modified 0m ago) [M]\n") {
-		t.Errorf("changed file, map without outline: git ran:\n%s\noutput:\n%s", log, out)
+	out, log := run("-A", "files.go")
+	if !status(log, " -- files.go") || !strings.Contains(log, "diff --name-only --no-renames -z ") || !strings.Contains(out, "  5 init#2  func init() [changed]\n") {
+		t.Errorf("a file: git ran:\n%s\noutput:\n%s", log, out)
 	}
-	if out, log := run("-A", "files.go"); !loadsChanges(log) || !strings.Contains(out, "  5 init#2  func init() [changed]\n") {
-		t.Errorf("changed file: git ran:\n%s\noutput:\n%s", log, out)
+	if !strings.HasPrefix(out, "context: 1 changed symbol vs HEAD\n") {
+		t.Errorf("a file: the context: line counts its own changes:\n%s", out)
 	}
-	if out, log := run("-A", "--outline"); !loadsChanges(log) || !strings.Contains(out, "init#2:5 [changed]") {
-		t.Errorf("changed file in the map: git ran:\n%s\noutput:\n%s", log, out)
+	out, log = run("-A")
+	if !status(log, "") || hunks(log) || !strings.HasPrefix(out, "context: 3 changed files\n") || !strings.Contains(out, " [branch]\n") {
+		t.Errorf("the map: git ran:\n%s\noutput:\n%s", log, out)
 	}
-	// still clean: a clean file, a clean folder
-	for _, args := range [][]string{{"-A", "render.go"}, {"-A", "--outline", "sub"}} {
-		if out, log := run(args...); loadsChanges(log) || strings.HasPrefix(out, "context:") {
-			t.Errorf("clean: glint %q loaded the changes; git ran:\n%s\noutput:\n%s", args, log, out)
-		}
+	out, log = run("-A", "sub")
+	if !status(log, " -- sub") || hunks(log) || strings.HasPrefix(out, "context:") {
+		t.Errorf("a folder: git ran:\n%s\noutput:\n%s", log, out)
 	}
-
-	// on a branch: what its commits changed gets marks, the rest is clean
-	gitRun(t, dir, "checkout", "-q", "files.go")
-	gitRun(t, dir, "checkout", "-qb", "topic")
-	write(t, filepath.Join(dir, "render.go"), "package demo\n\nfunc Draw() {}\n\nfunc Clear() {\n\tprintln(1)\n}\n")
-	gitRun(t, dir, "commit", "-qam", "clear")
-	if out, log := run("-A", "render.go"); !loadsChanges(log) || !strings.Contains(out, "  5 func Clear() [branch]\n") {
-		t.Errorf("changed on the branch: git ran:\n%s\noutput:\n%s", log, out)
+	out, log = run("-A", "--outline", "sub")
+	if !status(log, " -- sub") || !hunks(log) || !strings.Contains(out, "↳ Other:3 [changed]\n") {
+		t.Errorf("a folder with --outline: git ran:\n%s\noutput:\n%s", log, out)
 	}
-	for _, args := range [][]string{{"-A", "files.go"}, {"-A", "--outline", "sub"}} {
-		if out, log := run(args...); loadsChanges(log) || strings.HasPrefix(out, "context:") {
-			t.Errorf("not changed on the branch: glint %q loaded the changes; git ran:\n%s\noutput:\n%s", args, log, out)
-		}
-	}
-	if out, log := run("-A"); !loadsChanges(log) || !strings.Contains(out, "render.go 7L (modified 0m ago) [branch]\n") {
-		t.Errorf("the whole repository on the branch: git ran:\n%s\noutput:\n%s", log, out)
+	// two paths of one repository share one load and one context: line
+	out, log = run("-A", "files.go", "render.go")
+	if !status(log, " -- files.go render.go") || strings.Count(out, "context:") != 1 || !strings.HasPrefix(out, "context: 1 changed symbol vs HEAD, 1 symbol changed on this branch since ") {
+		t.Errorf("two files: git ran:\n%s\noutput:\n%s", log, out)
 	}
 }

@@ -107,18 +107,16 @@ func contains(t *testing.T, out string, want ...string) {
 
 func TestContextMarksMap(t *testing.T) {
 	dir := workRepo(t)
-	// new.go's symbol is a changed one too; the frames have no outline
-	const line = "context: 2 changed symbols vs HEAD, 1 symbol changed on this branch since "
-
-	for _, c := range []struct{ name, cwd, path string }{
-		{"root", dir, "."},
-		{"subdirectory", filepath.Join(dir, "internal"), "."},
-		{"subdirectory, given the root", filepath.Join(dir, "internal"), ".."},
+	// a map without an outline loads file marks only, for what it lists
+	for _, c := range []struct{ name, cwd, path, line string }{
+		{"root", dir, ".", "context: 4 changed files\n"},
+		{"subdirectory", filepath.Join(dir, "internal"), ".", "context: 2 changed files\n"},
+		{"subdirectory, given the root", filepath.Join(dir, "internal"), "..", "context: 4 changed files\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Chdir(c.cwd)
 			out := agentView(t, Options{}, c.path)
-			if !strings.HasPrefix(out, line) {
+			if !strings.HasPrefix(out, c.line) {
 				t.Errorf("want the context: line first, got:\n%s", out)
 			}
 			// uncommitted: the git status says it, so no [changed] next to it
@@ -138,7 +136,8 @@ func TestContextMarksMap(t *testing.T) {
 	t.Chdir(dir)
 	out := agentView(t, Options{Outline: true}, ".")
 	contains(t, out, "↳ List:3 init#1:7 init#2:9 [changed]\n", "↳ Draw:3 [branch] Clear:7\n")
-	if !strings.HasPrefix(out, line) {
+	// new.go's symbol is a changed one too; the frames have no outline
+	if !strings.HasPrefix(out, "context: 2 changed symbols vs HEAD, 1 symbol changed on this branch since ") {
 		t.Errorf("want the context: line first, got:\n%s", out)
 	}
 	contains(t, out, "new.go 3L [new]\n  ↳ New:3\n") // every symbol of a new file is new: not marked
@@ -173,7 +172,8 @@ func TestContextMarksOutline(t *testing.T) {
 	if !strings.HasPrefix(header, "internal/files/files.go ") || !strings.HasSuffix(header, " 9L (last commit 0m ago: init) [M], modified 0m ago") || body != want {
 		t.Errorf("got\n%s\nwant the header, then\n%s", out, want)
 	}
-	if !strings.HasPrefix(out, "context: 2 changed symbols vs HEAD, ") {
+	if !strings.HasPrefix(out, "context: 1 changed symbol vs HEAD\n") { // only the file's own changes
+
 		t.Errorf("want the context: line first:\n%s", out)
 	}
 
