@@ -46,10 +46,13 @@ type Options struct {
 	// context: line. PRISM_NO_CONTEXT=1 and NoGit do the same.
 	NoContext bool
 
-	sameAge   string   // set when most top-level entries share an age: said once in the header
-	workspace bool     // listing a folder of projects that isn't itself a repo
-	ctx       *workCtx // the listed repository's context; nil when there's none
-	prefix    string   // the listing root relative to that repository's root
+	sameAge   string    // set when most top-level entries share an age: said once in the header
+	workspace bool      // listing a folder of projects that isn't itself a repo
+	ctx       *workCtx  // the listed repository's context; nil when there's none
+	sym       *workCtx  // where symbols get their marks, if not from ctx
+	prefix    string    // the listing root relative to that repository's root
+	base      string    // where ctx starts, relative to the listing root: "" or an opened project
+	cs        *contexts // the run's contexts
 }
 
 func (o *Options) defaults() {
@@ -89,6 +92,8 @@ type node struct {
 	branchN  int      // listed files below this dir marked [branch]
 	inSeries *node    // the node standing in for the run of entries this one was folded into
 	recent   bool     // opened because it is one of the most recently active projects
+	ctx      *workCtx // an opened project's context, which marks its subtree
+	sym      *workCtx // ...and the one with symbol detail for it, with --outline
 	changedN int      // listed files with uncommitted changes below this dir
 	newN     int      // ...of which untracked
 	like     string   // for a dir series: the sibling it resembles
@@ -141,6 +146,7 @@ func Run(w io.Writer, paths []string, opt Options) int {
 		ctxs[i] = cs.add(p, infos[i].IsDir(), here)
 	}
 	cs.start()
+	opt.cs = cs
 	// rendered first, so the context: line can go on top: it names the
 	// marks that were handed out while rendering
 	var buf bytes.Buffer
@@ -797,6 +803,13 @@ func expandable(k *node) bool {
 	return k.dir && !k.sub && !k.skipped && !k.empty && k.hollow == "" && k.series == nil && len(k.kids) > 0
 }
 
+// openable reports whether a folder has entries to list: expandable, or
+// a project of a workspace (which the map opens only when it's recently
+// active). One left closed counts as not expanded, glance or not.
+func openable(k *node) bool {
+	return expandable(k) || (k.sub && len(k.kids) > 0)
+}
+
 // expand opens directories in order of value (code first, any depth) until
 // the line budget is used up. Media and data folders open last, if at all.
 // In a workspace of projects every project first gets a one-line glance.
@@ -817,7 +830,7 @@ func expand(root *node, opt Options) (used int, glances []*node) {
 	workspace := opt.workspace && projects >= 3
 	if workspace {
 		for _, k := range root.kids {
-			if expandable(k) || (k.sub && len(k.kids) > 0) {
+			if openable(k) {
 				if used >= opt.Budget {
 					break
 				}
@@ -1368,13 +1381,17 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 	glances := map[string]string{} // glance text → first sibling that had it
 	for _, k := range kids {
 		if k.dir {
-			fmt.Fprintln(w, indent+dirLine(k, depth, opt))
+			kopt := opt
+			if k.ctx != nil { // a project opened in a workspace: marked with its own context
+				kopt.ctx, kopt.sym, kopt.prefix, kopt.base = k.ctx, k.sym, ".", k.rel
+			}
+			fmt.Fprintln(w, indent+dirLine(k, depth, kopt))
 			switch {
 			case k.expanded:
-				collapsed += render(w, k, depth+1, opt)
+				collapsed += render(w, k, depth+1, kopt)
 			case k.glance:
 				if opt.Changed {
-					fmt.Fprintln(w, indent+"  "+changedLine(k, opt.ctx))
+					fmt.Fprintln(w, indent+"  "+changedLine(k, kopt.ctx))
 				} else if g := glanceLine(k); glances[g] != "" {
 					fmt.Fprintln(w, indent+"  ↳ same layout as "+glances[g]+"/")
 				} else {
@@ -1382,7 +1399,7 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 					fmt.Fprintln(w, indent+"  "+g)
 				}
 				collapsed++
-			case expandable(k):
+			case openable(k): // counted like a glanced one: the footer doesn't depend on glances
 				collapsed++
 			}
 			continue
@@ -1391,7 +1408,10 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 		if len(k.symbols) > 0 {
 			var parts []string
 			used, dropped := 0, 0
-			rel, ctx := path.Join(opt.prefix, k.rel), opt.ctx
+			rel, ctx := path.Join(opt.prefix, strings.TrimPrefix(k.rel, opt.base+"/")), opt.ctx
+			if opt.sym != nil {
+				ctx = opt.sym
+			}
 			if isNew(k.git) {
 				ctx = nil
 			}
@@ -1460,9 +1480,91 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 	return collapsed
 }
 
+// footerLines is the length of the note under a map with collapsed folders.
+const footerLines = 2
+
+// lineWriter counts the lines written through it.
+type lineWriter struct {
+	w     io.Writer
+	lines int
+}
+
+func (l *lineWriter) Write(p []byte) (int, error) {
+	l.lines += bytes.Count(p, []byte{'\n'})
+	return l.w.Write(p)
+}
+
+// symbolLines counts the symbol lines a map prints under its files
+// (--outline), which its budget leaves out.
+func symbolLines(n *node, per int) (c int) {
+	kids, _ := shown(n, per)
+	for _, k := range kids {
+		switch {
+		case k.dir && k.expanded:
+			c += symbolLines(k, per)
+		case !k.dir && len(k.symbols) > 0:
+			c++
+		}
+	}
+	return c
+}
+
+// openedRepo is a git repository found below a map's root outside git that
+// the map opens up, with its context loading.
+type openedRepo struct {
+	n          *node
+	files, sym func() *workCtx
+}
+
+// openRepos starts loading the context of every nested repository the map
+// opens up (in a workspace: the most recently active projects), scoped to
+// what it shows of them.
+func openRepos(root *node, opt Options) []openedRepo {
+	var out []openedRepo
+	var walk func(*node)
+	walk = func(n *node) {
+		kids, _ := shown(n, opt.PerDir)
+		for _, k := range kids {
+			switch {
+			case !k.dir || !k.expanded:
+			case k.repo != nil:
+				var outlined []string
+				if opt.Outline {
+					outlined = outlinedFiles(k, opt.PerDir)
+				}
+				if files, sym := opt.cs.nested(k.abs, outlined); files != nil {
+					out = append(out, openedRepo{k, files, sym})
+				}
+			default:
+				walk(k)
+			}
+		}
+	}
+	walk(root)
+	return out
+}
+
+// outlinedFiles returns the files below n whose symbols the map shows: the
+// source files listed in the folders it opens.
+func outlinedFiles(n *node, per int) []string {
+	var out []string
+	kids, _ := shown(n, per)
+	for _, k := range kids {
+		switch {
+		case k.dir && k.expanded:
+			out = append(out, outlinedFiles(k, per)...)
+		case !k.dir && k.series == nil && k.target == "" && k.mode.IsRegular() && HasOutline(k.name):
+			out = append(out, k.abs)
+		}
+	}
+	return out
+}
+
 // listDir prints the map of a directory. ctx is the context of its
 // repository.
 func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
+	lw := &lineWriter{w: w} // how long the header turns out
+	w = lw
 	s := gather(dir, opt)
 	if opt.Changed && s.repo == nil && len(s.repos) == 0 {
 		fmt.Fprintf(w, "%s\n--changed needs git: this folder is not in a git repo and contains none. Use --since 2h for recently modified files.\n", s.rootAbs)
@@ -1478,7 +1580,13 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	treeOpt := opt
 	treeOpt.Budget = max(opt.Budget-headerLines, 10)
 	treeOpt.workspace = s.repo == nil && projectOf(root) == nil
-	used, glances := expand(root, treeOpt)
+	_, glances := expand(root, treeOpt)
+	// the projects a workspace map opens up get their own context, loaded
+	// next to the rest of glint's work; the others stay one line each
+	var opened []openedRepo
+	if s.repo == nil {
+		opened = openRepos(root, opt)
+	}
 	if opt.Since == 0 && !opt.Changed {
 		addEmptyDirs(root, opt)
 	}
@@ -1641,31 +1749,65 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	}
 	// the context is waited for only now: it loads (git, outlines of the
 	// changed files) while glint reads the tree
+	var marking []*workCtx // the contexts this map marks with
 	if c := ctx(); c != nil {
 		if prefix, ok := c.rel(s.rootAbs); ok {
 			markTree(root, c, prefix)
 			opt.ctx, opt.prefix = c, prefix
-			// The context: line counts against the budget. A dry run of the
-			// rendering says whether this map prints a mark; if so and the
-			// tree is full, it gives back its last glance, a line of
-			// detail. In --changed a glance lists changed files, entries
-			// that are never given up: the line goes on top of the budget.
-			printed := c.printed
-			render(io.Discard, root, 0, opt)
-			if c.printed > printed || c.st.Changes.Skipped != "" {
-				if c.claimLine() && used >= treeOpt.Budget && !opt.Changed {
-					for _, g := range slices.Backward(glances) {
-						if g.glance {
-							g.glance = false
-							break
-						}
+			marking = append(marking, c)
+		}
+	}
+	for _, o := range opened {
+		c := o.files()
+		if prefix, ok := c.rel(o.n.abs); !ok || prefix != "." {
+			continue
+		}
+		markTree(o.n, c, ".")
+		o.n.ctx = c
+		marking = append(marking, c)
+		if o.sym != nil {
+			if sy := o.sym(); sy.st.Changes != nil {
+				o.n.sym = sy
+				marking = append(marking, sy)
+			}
+		}
+	}
+	if len(marking) > 0 {
+		// The context: line counts against the budget. A dry run of the
+		// rendering says whether this map prints a mark; if so and the
+		// map leaves no line of its budget free, it gives back its last
+		// glance, a line of detail. The map's length is counted as the
+		// budget counts it: the header as printed, the tree without the
+		// symbol lines of --outline, and the footer. In --changed a
+		// glance lists changed files, entries that are never given up:
+		// the line goes on top of the budget.
+		printed := func() (n int, skipped bool) {
+			for _, c := range marking {
+				n += c.printed
+				skipped = skipped || c.st.Changes.Skipped != ""
+			}
+			return n, skipped
+		}
+		before, _ := printed()
+		dry := &lineWriter{w: io.Discard}
+		lines := lw.lines
+		if render(dry, root, 0, opt) > 0 {
+			lines += footerLines
+		}
+		lines += dry.lines - symbolLines(root, opt.PerDir)
+		if after, skipped := printed(); after > before || skipped {
+			if marking[0].claimLine() && lines >= opt.Budget && !opt.Changed {
+				for _, g := range slices.Backward(glances) {
+					if g.glance {
+						g.glance = false
+						break
 					}
 				}
 			}
 		}
 	}
 	collapsed := render(w, root, 0, opt)
-	if collapsed > 0 {
+	if collapsed > 0 { // footerLines
 		fmt.Fprintf(w, "\n%d dirs not expanded (budget %d lines; the top level is always listed in full); `glint -A <dir>` opens one.\n", collapsed, opt.Budget)
 	}
 }
