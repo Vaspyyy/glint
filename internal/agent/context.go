@@ -31,7 +31,8 @@ type workCtx struct {
 	info    *repo.Info  // nil, or Git false, outside a repository
 	st      *work.State // never nil
 	cs      *contexts
-	printed int // marks printed so far
+	printed int  // marks printed so far
+	nested  bool // a project opened in a map of a folder that isn't in git
 }
 
 // rel returns abs relative to the repository root, the form prism's marks
@@ -187,15 +188,70 @@ func (cs *contexts) start() {
 	for _, g := range cs.groups {
 		ch := make(chan *workCtx, 1)
 		go func() { ch <- g.load(!g.files && !cs.outline) }()
-		g.get = sync.OnceValue(func() *workCtx {
-			c := <-ch
-			c.cs = cs
-			cs.mu.Lock()
-			cs.used = append(cs.used, c)
-			cs.mu.Unlock()
-			return c
-		})
+		g.get = cs.waiter(ch)
 	}
+}
+
+// waiter returns a function that waits for a context loading in the
+// background and counts it as used by the run.
+func (cs *contexts) waiter(ch <-chan *workCtx) func() *workCtx {
+	return sync.OnceValue(func() *workCtx {
+		c := <-ch
+		c.cs = cs
+		cs.mu.Lock()
+		cs.used = append(cs.used, c)
+		cs.mu.Unlock()
+		return c
+	})
+}
+
+// nested begins loading, in the background, the context of a repository
+// that a map of a folder outside git (a workspace) opens up: dir is its
+// root. files waits for its file marks, for the whole project: the map
+// shows its files and counts the rest in its folders. With outlined (the
+// files whose symbols the map shows) syms waits for a load with symbol
+// detail, scoped to them; else it's nil. Only opened projects load
+// anything: the others are a line each, which context doesn't change.
+// git runs without optional locks, as glint's own git status of a nested
+// repository does: these are other projects, so their index is left alone.
+func (cs *contexts) nested(dir string, outlined []string) (files, syms func() *workCtx) {
+	if cs == nil || cs.off {
+		return nil, nil
+	}
+	info := sync.OnceValue(func() *repo.Info {
+		info, _ := repo.Detect(dir)
+		return info
+	})
+	load := func(paths []string, filesOnly bool) func() *workCtx {
+		ch := make(chan *workCtx, 1)
+		go func() {
+			info := info()
+			git := info != nil && info.Git
+			var rels []string
+			for _, p := range paths {
+				if !git {
+					break
+				}
+				if rel, ok := info.Rel(p); ok {
+					rels = append(rels, rel)
+				}
+			}
+			c := &workCtx{info: info, nested: true}
+			if !git || (paths != nil && rels == nil) {
+				c.st = work.Load(info, work.Changes, false)
+			} else {
+				c.st = work.LoadWith(info, work.Options{Layers: work.Changes,
+					Changes: changes.Options{Paths: rels, FilesOnly: filesOnly, NoLocks: true}})
+			}
+			ch <- c
+		}()
+		return cs.waiter(ch)
+	}
+	files = load(nil, true)
+	if len(outlined) > 0 {
+		syms = load(outlined, false)
+	}
+	return files, syms
 }
 
 // load reads the context of a group's repository, scoped to its paths.
@@ -243,10 +299,12 @@ func sameRepo(a, b string) bool {
 
 // line returns the context: line to print at the top, once everything has
 // been rendered, or "". There's one line for the run: when more than one
-// repository contributed, each one's part starts with its folder's name.
+// repository contributed, or a project opened in a workspace map did, each
+// one's part starts with its folder's name.
 func (cs *contexts) line() string {
 	var roots []string
 	parts := map[string][]string{}
+	named := false
 	for _, c := range cs.used {
 		p, ok := strings.CutPrefix(c.st.Line(), "context: ")
 		if !ok || p == "" {
@@ -262,6 +320,7 @@ func (cs *contexts) line() string {
 		if !slices.Contains(parts[root], p) {
 			parts[root] = append(parts[root], p)
 		}
+		named = named || c.nested
 	}
 	if len(roots) == 0 {
 		return ""
@@ -269,7 +328,7 @@ func (cs *contexts) line() string {
 	var out []string
 	for _, root := range roots {
 		p := strings.Join(parts[root], "; ")
-		if len(roots) > 1 {
+		if len(roots) > 1 || named {
 			p = filepath.Base(root) + ": " + p
 		}
 		out = append(out, p)

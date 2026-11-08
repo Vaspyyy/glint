@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,7 +238,7 @@ func TestContextLineCountsAgainstBudget(t *testing.T) {
 	write(t, filepath.Join(dir, "alpha", "alphax", "a.go"), "package a\n\nfunc A() {}\n")
 	gitIn(t, dir, "commit", "-qam", "A")
 
-	on, off := agentView(t, Options{Budget: 24}, "."), agentView(t, Options{Budget: 24, NoContext: true}, ".")
+	on, off := agentView(t, Options{Budget: 44}, "."), agentView(t, Options{Budget: 44, NoContext: true}, ".")
 	if !strings.HasPrefix(on, "context: ") || !strings.Contains(off, "↳ ") {
 		t.Fatalf("want a context: line, and glances without it:\non:\n%s\noff:\n%s", on, off)
 	}
@@ -410,5 +411,119 @@ func TestContextSymlinkToDevZero(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("glint -A --outline hangs on an untracked symlink to /dev/zero")
+	}
+}
+
+// workspaceDir makes a folder outside git with three repositories, each its
+// own project: alpha (workRepo), recently active, so a map of the folder
+// opens it up; beta, changed the same way but untouched for a month, and
+// gamma, clean and as old: a line each.
+func workspaceDir(t *testing.T) string {
+	t.Helper()
+	ws := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		if err := os.Rename(workRepo(t), filepath.Join(ws, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gamma := filepath.Join(ws, "gamma")
+	write(t, filepath.Join(gamma, "go.mod"), "module example.com/gamma\n\ngo 1.22\n")
+	write(t, filepath.Join(gamma, "x.go"), "package x\n\nfunc X() {}\n")
+	gitIn(t, gamma, "init", "-q", "-b", "main")
+	gitIn(t, gamma, "add", ".")
+	gitIn(t, gamma, "commit", "-qm", "init")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, name := range []string{"beta", "gamma"} {
+		err := filepath.WalkDir(filepath.Join(ws, name), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return os.Chtimes(p, old, old)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ws
+}
+
+// A map of a folder outside git marks the projects it opens up, each with
+// its own context, from wherever it's run; the projects it leaves closed
+// are a line each, unmarked.
+func TestContextWorkspace(t *testing.T) {
+	ws := workspaceDir(t)
+	outside := t.TempDir()
+	for _, c := range []struct{ name, cwd, path string }{
+		{"inside", ws, "."},
+		{"inside the opened project", filepath.Join(ws, "alpha"), ".."},
+		{"inside a closed project", filepath.Join(ws, "beta"), ".."},
+		{"outside", outside, ws},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Chdir(c.cwd)
+			out := agentView(t, Options{}, c.path)
+			if !strings.HasPrefix(out, "context: alpha: 4 changed files\n") {
+				t.Errorf("want the context: line first, naming the project:\n%s", out)
+			}
+			contains(t, out, "; opened: recently active) [2 branch]\n", "    render.go 7L [branch]\n", "    files.go 9L [M]\n",
+				"    frame_{001..004}.txt ×4 1L each [branch]\n")
+			if !regexp.MustCompile(`\n  internal/ \([^)]*\) \[1 changed\] \[1 branch\]\n`).MatchString(out) {
+				t.Errorf("want the folder to count its file changed on the branch:\n%s", out)
+			}
+			if !regexp.MustCompile(`\nbeta/ \([^)\[]*\)\n  ↳ [^\[]*\n`).MatchString(out) {
+				t.Errorf("want beta closed and unmarked:\n%s", out)
+			}
+			if got, off := unmark(out), agentView(t, Options{NoContext: true}, c.path); got != off {
+				t.Errorf("--no-context should only drop the marks and the context: line\ncontext on, unmarked:\n%s\noff:\n%s", got, off)
+			}
+		})
+	}
+
+	// with --outline the symbols it shows are marked too
+	t.Chdir(ws)
+	out := agentView(t, Options{Outline: true}, ".")
+	if !strings.HasPrefix(out, "context: alpha: 4 changed files; 2 changed symbols vs HEAD, 1 symbol changed on this branch since ") {
+		t.Errorf("want the context: line first:\n%s", out)
+	}
+	contains(t, out, "↳ List:3 init#1:7 init#2:9 [changed]\n", "↳ Draw:3 [branch] Clear:7\n", "  new.go 3L [new]\n    ↳ New:3\n")
+	if got, off := unmark(out), agentView(t, Options{Outline: true, NoContext: true}, "."); got != off {
+		t.Errorf("--no-context should only drop the marks and the context: line\ncontext on, unmarked:\n%s\noff:\n%s", got, off)
+	}
+	t.Setenv("PRISM_NO_CONTEXT", "1")
+	if got := agentView(t, Options{}, "."); strings.Contains(got, "context:") || markRe.MatchString(got) {
+		t.Errorf("PRISM_NO_CONTEXT=1 marks nothing:\n%s", got)
+	}
+}
+
+// In a workspace map the context: line fits in the budget at every size,
+// and it never costs an entry: at most a glance gives way.
+func TestContextWorkspaceBudget(t *testing.T) {
+	ws := workspaceDir(t)
+	grid := gridRepo(t)
+	gitIn(t, grid, "checkout", "-qb", "feature")
+	write(t, filepath.Join(grid, "alpha", "alphax", "a.go"), "package a\n\nfunc A() {}\n")
+	gitIn(t, grid, "commit", "-qam", "A")
+	if err := os.RemoveAll(filepath.Join(ws, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(grid, filepath.Join(ws, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+	glance := func(l string) bool { return strings.HasPrefix(strings.TrimLeft(l, " "), "↳ ") }
+	marked := 0
+	for budget := 16; budget <= 64; budget += 3 {
+		on, off := agentView(t, Options{Budget: budget}, "."), agentView(t, Options{Budget: budget, NoContext: true}, ".")
+		if strings.HasPrefix(on, "context: alpha: 1 changed file\n") {
+			marked++
+		}
+		entries := slices.DeleteFunc(strings.Split(off, "\n"), glance)
+		kept := slices.DeleteFunc(strings.Split(unmark(on), "\n"), glance)
+		if n := strings.Count(on, "\n"); n > budget || !slices.Equal(kept, entries) || strings.Count(on, "↳ ") < strings.Count(off, "↳ ")-1 {
+			t.Errorf("budget %d: %d lines; want every entry kept, at most a glance fewer\non:\n%s\noff:\n%s", budget, n, on, off)
+		}
+	}
+	if marked == 0 {
+		t.Error("alpha was never opened and marked")
 	}
 }

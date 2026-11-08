@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Vaspyyy/prism/report"
 )
@@ -25,6 +27,16 @@ func TestMain(m *testing.M) {
 // changes into it.
 func contextRepo(t *testing.T) string {
 	t.Helper()
+	dir := t.TempDir()
+	makeContextRepo(t, dir)
+	t.Chdir(dir)
+	return dir
+}
+
+// makeContextRepo makes contextRepo's repository in dir, and turns context
+// on.
+func makeContextRepo(t *testing.T, dir string) {
+	t.Helper()
 	isolate(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -39,7 +51,6 @@ func contextRepo(t *testing.T) string {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
-	dir := t.TempDir()
 	write(t, filepath.Join(dir, "files.go"), "package demo\n\nfunc init() {}\n\nfunc init() {}\n")
 	write(t, filepath.Join(dir, "render.go"), "package demo\n\nfunc Draw() {}\n\nfunc Clear() {}\n")
 	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "."}, {"commit", "-qm", "init"}, {"checkout", "-qb", "feature"}} {
@@ -48,8 +59,6 @@ func contextRepo(t *testing.T) string {
 	write(t, filepath.Join(dir, "render.go"), "package demo\n\nfunc Draw() {\n\tprintln(1)\n}\n\nfunc Clear() {}\n")
 	gitRun(t, dir, "commit", "-qam", "draw")
 	write(t, filepath.Join(dir, "files.go"), "package demo\n\nfunc init() {}\n\nfunc init() { println(2) }\n")
-	t.Chdir(dir)
-	return dir
 }
 
 func marks(f *report.GlintFile) map[string][]string {
@@ -135,6 +144,12 @@ func TestNoContextFlag(t *testing.T) {
 // returns a function that runs glint and returns its output and that log.
 func logGit(t *testing.T) func(args ...string) (out, log string) {
 	t.Helper()
+	return logGitAs(t, `"$*"`)
+}
+
+// logGitAs is logGit with each command logged as line, a shell word.
+func logGitAs(t *testing.T, line string) func(args ...string) (out, log string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a shell script as git")
 	}
@@ -143,7 +158,7 @@ func logGit(t *testing.T) func(args ...string) (out, log string) {
 		t.Skip("git not installed")
 	}
 	bin, file := t.TempDir(), filepath.Join(t.TempDir(), "git.log")
-	write(t, filepath.Join(bin, "git"), "#!/bin/sh\necho \"$*\" >> '"+file+"'\nexec '"+real+"' \"$@\"\n")
+	write(t, filepath.Join(bin, "git"), "#!/bin/sh\necho "+line+" >> '"+file+"'\nexec '"+real+"' \"$@\"\n")
 	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -235,3 +250,72 @@ func TestContextLoadsWhatItShows(t *testing.T) {
 		t.Errorf("two files: git ran:\n%s\noutput:\n%s", log, out)
 	}
 }
+
+// A map of a folder outside git loads the context of the projects it opens
+// up (the recently active ones) and of no other: the rest stay a line each,
+// with no git run for context. It runs that git in the project, without
+// optional locks: glint leaves another repository's index alone, as its
+// own git status of it does.
+func TestWorkspaceLoadsOpenedProjectsOnly(t *testing.T) {
+	ws := t.TempDir()
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		makeContextRepo(t, filepath.Join(ws, name))
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, name := range []string{"beta", "gamma"} {
+		for _, f := range []string{"files.go", "render.go"} {
+			if err := os.Chtimes(filepath.Join(ws, name, f), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// each command as: the directory it runs in, GIT_OPTIONAL_LOCKS, its arguments
+	run := logGitAs(t, `"$(pwd)|${GIT_OPTIONAL_LOCKS-}|$*"`)
+	prism := regexp.MustCompile(`^(status --porcelain -z|merge-base|diff --name-only|diff -U0|rev-parse --path-format|for-each-ref)`)
+	alpha, _ := filepath.EvalSymlinks(filepath.Join(ws, "alpha"))
+	context := func(log string) (in []string) {
+		for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+			if f := strings.SplitN(l, "|", 3); len(f) == 3 && prism.MatchString(f[2]) {
+				if f[0] != alpha || f[1] != "0" {
+					t.Errorf("context git ran in %s with GIT_OPTIONAL_LOCKS=%q, want %s and 0: %s", f[0], f[1], alpha, f[2])
+				}
+				in = append(in, f[2])
+			}
+		}
+		return in
+	}
+	for _, cwd := range []string{ws, filepath.Join(ws, "beta"), t.TempDir()} {
+		t.Chdir(cwd)
+		out, log := run("-A", ws)
+		if got := context(log); !slices.ContainsFunc(got, func(c string) bool { return strings.HasPrefix(c, "status --porcelain -z") }) {
+			t.Errorf("from %s: no context loaded for alpha; git ran:\n%s", cwd, log)
+		}
+		if !strings.HasPrefix(out, "context: alpha: 2 changed files\n") || !strings.Contains(out, "; opened: recently active) [1 branch]\n  files.go 5L [M]\n  render.go 7L [branch]\n") {
+			t.Errorf("from %s: want alpha opened and marked:\n%s", cwd, out)
+		}
+		if !regexp.MustCompile(`\nbeta/ \([^)\[]*\)\n  ↳ files.go render.go\n`).MatchString(out) {
+			t.Errorf("from %s: want beta closed and unmarked:\n%s", cwd, out)
+		}
+	}
+
+	// --outline adds a load with symbol detail for the files it outlines
+	t.Chdir(ws)
+	out, log := run("-A", "--outline", ".")
+	if !slices.Contains(context(log), "status --porcelain -z --no-renames --untracked-files=all --ignore-submodules=dirty -- files.go render.go") ||
+		!strings.Contains(out, "  ↳ Draw:3 [branch] Clear:7\n") || !strings.Contains(out, "  ↳ init#1:3 init#2:5 [changed]\n") {
+		t.Errorf("--outline: git ran:\n%s\noutput:\n%s", log, out)
+	}
+	off, log := run("-A", "--no-context", ".")
+	if got := context(log); got != nil {
+		t.Errorf("--no-context loaded context:\n%s", log)
+	}
+	if on, _ := run("-A", "."); off == on || markRe.ReplaceAllString(on[strings.Index(on, "\n")+1:], "") != off {
+		t.Errorf("--no-context should only drop the marks and the context: line\non:\n%s\noff:\n%s", on, off)
+	}
+	t.Setenv("PRISM_NO_CONTEXT", "1")
+	if _, log := run("-A", "."); context(log) != nil {
+		t.Errorf("PRISM_NO_CONTEXT=1 loaded context:\n%s", log)
+	}
+}
+
+var markRe = regexp.MustCompile(` \[(changed|branch|\d+ branch)\]`)
