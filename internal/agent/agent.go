@@ -85,13 +85,13 @@ type node struct {
 	gitlink  bool        // a directory entry git lists as one item (submodule / nested repo)
 	repo     *nestedRepo // set on the dir of a repo found inside a non-git scan
 	vendored bool
-	marks    string // context marks printed after a file: " [branch]"
-	branchN  int    // listed files below this dir marked [branch]
-	inSeries *node  // the node standing in for the run of entries this one was folded into
-	recent   bool   // opened because it is one of the most recently active projects
-	changedN int    // listed files with uncommitted changes below this dir
-	newN     int    // ...of which untracked
-	like     string // for a dir series: the sibling it resembles
+	marks    []string // context marks printed after a file: "branch"
+	branchN  int      // listed files below this dir marked [branch]
+	inSeries *node    // the node standing in for the run of entries this one was folded into
+	recent   bool     // opened because it is one of the most recently active projects
+	changedN int      // listed files with uncommitted changes below this dir
+	newN     int      // ...of which untracked
+	like     string   // for a dir series: the sibling it resembles
 
 	expanded bool
 	lines    int
@@ -159,7 +159,7 @@ func Run(w io.Writer, paths []string, opt Options) int {
 			describeFile(&buf, p, infos[i], opt, here, ctxs[i])
 		}
 	}
-	for _, l := range cs.lines() {
+	if l := cs.line(); l != "" {
 		fmt.Fprintln(w, l)
 	}
 	w.Write(buf.Bytes())
@@ -1166,12 +1166,12 @@ func dirLine(n *node, depth int, opt Options) string {
 	if n.recent {
 		meta = append(meta, "opened: recently active")
 	}
-	return name + " (" + strings.Join(meta, "; ") + ")" + dirMark(n)
+	return name + " (" + strings.Join(meta, "; ") + ")" + dirMark(n, opt.ctx)
 }
 
 // dirMark summarises uncommitted changes below a folder, then the files
 // below it changed only on this branch (context marks).
-func dirMark(n *node) string {
+func dirMark(n *node, ctx *workCtx) string {
 	m := ""
 	switch {
 	case n.changedN == 0, n.repo != nil: // a repo's own count (incl. deletions) is in its line
@@ -1182,9 +1182,9 @@ func dirMark(n *node) string {
 	}
 	switch {
 	case n.gitlink:
-		m += n.marks
+		m += ctx.print(n.marks)
 	case n.branchN > 0:
-		m += fmt.Sprintf(" [%d %s]", n.branchN, work.MarkBranch)
+		m += ctx.count(n.branchN)
 	}
 	return m
 }
@@ -1255,7 +1255,7 @@ func fileLine(n *node, depth int, opt Options) string {
 		if t := when(n, depth, opt); t != "" {
 			b.WriteString(" (" + t + ")")
 		}
-		b.WriteString(gitMark(n.git) + n.marks)
+		b.WriteString(gitMark(n.git) + opt.ctx.print(n.marks))
 		return b.String()
 	}
 	b.WriteString(quote(n.name))
@@ -1288,12 +1288,12 @@ func fileLine(n *node, depth int, opt Options) string {
 	if len(extra) > 0 {
 		b.WriteString(" (" + strings.Join(extra, "; ") + ")")
 	}
-	b.WriteString(gitMark(n.git) + n.marks)
+	b.WriteString(gitMark(n.git) + opt.ctx.print(n.marks))
 	return b.String()
 }
 
 // changedLine lists the changed files inside a collapsed folder (--changed).
-func changedLine(n *node) string {
+func changedLine(n *node, ctx *workCtx) string {
 	var paths []string
 	var walk func(*node)
 	walk = func(d *node) {
@@ -1303,10 +1303,10 @@ func changedLine(n *node) string {
 				walk(k)
 			case k.series != nil:
 				for _, m := range k.series {
-					paths = append(paths, strings.TrimPrefix(m.rel, n.rel+"/")+gitMark(m.git)+m.marks)
+					paths = append(paths, strings.TrimPrefix(m.rel, n.rel+"/")+gitMark(m.git)+suffix(m.marks))
 				}
 			default:
-				paths = append(paths, strings.TrimPrefix(k.rel, n.rel+"/")+gitMark(k.git)+k.marks)
+				paths = append(paths, strings.TrimPrefix(k.rel, n.rel+"/")+gitMark(k.git)+suffix(k.marks))
 			}
 		}
 	}
@@ -1319,6 +1319,9 @@ func changedLine(n *node) string {
 		}
 		if i > 0 {
 			line += ", "
+		}
+		if strings.HasSuffix(p, suffix([]string{work.MarkBranch})) {
+			ctx.print([]string{work.MarkBranch}) // printed
 		}
 		line += p
 		used += len(p) + 2
@@ -1371,7 +1374,7 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 				collapsed += render(w, k, depth+1, opt)
 			case k.glance:
 				if opt.Changed {
-					fmt.Fprintln(w, indent+"  "+changedLine(k))
+					fmt.Fprintln(w, indent+"  "+changedLine(k, opt.ctx))
 				} else if g := glanceLine(k); glances[g] != "" {
 					fmt.Fprintln(w, indent+"  ↳ same layout as "+glances[g]+"/")
 				} else {
@@ -1428,7 +1431,11 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 				dirNames = append(dirNames, quote(k.name)+"/")
 			} else {
 				left[extKey(k.name)]++
-				fileNames = append(fileNames, quote(k.name))
+				name := quote(k.name)
+				if depth == 0 { // named, so marked
+					name += opt.ctx.print(k.marks)
+				}
+				fileNames = append(fileNames, name)
 			}
 		}
 		// the top level is always complete: every omitted name is listed.
@@ -1636,18 +1643,22 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	// changed files) while glint reads the tree
 	if c := ctx(); c != nil {
 		if prefix, ok := c.rel(s.rootAbs); ok {
-			changed, marked := markTree(root, c, prefix)
+			markTree(root, c, prefix)
 			opt.ctx, opt.prefix = c, prefix
-			// the context: line counts against the budget: it's there when
-			// a file got a mark, symbol detail was skipped, or the outline
-			// may mark a changed symbol. A full tree gives back its last
-			// glance for it.
-			line := marked || c.st.Changes.Skipped != "" || (opt.Outline && changed)
-			if line && used >= treeOpt.Budget {
-				for _, g := range slices.Backward(glances) {
-					if g.glance {
-						g.glance = false
-						break
+			// The context: line counts against the budget. A dry run of the
+			// rendering says whether this map prints a mark; if so and the
+			// tree is full, it gives back its last glance, a line of
+			// detail. In --changed a glance lists changed files, entries
+			// that are never given up: the line goes on top of the budget.
+			printed := c.printed
+			render(io.Discard, root, 0, opt)
+			if c.printed > printed || c.st.Changes.Skipped != "" {
+				if c.claimLine() && used >= treeOpt.Budget && !opt.Changed {
+					for _, g := range slices.Backward(glances) {
+						if g.glance {
+							g.glance = false
+							break
+						}
 					}
 				}
 			}
@@ -1856,6 +1867,7 @@ func describeFile(w io.Writer, path string, st fs.FileInfo, opt Options, here fu
 	if inRepo {
 		n.marks = c.fileMarks(rel)
 	}
+	c.print(n.marks) // the header prints them
 	mark := func(name string) string {
 		if !inRepo || isNew(n.git) {
 			return ""

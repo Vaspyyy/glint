@@ -3,12 +3,14 @@ package agent
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The other tests check output that depends only on the arguments and the
@@ -206,24 +208,34 @@ func unmarkLine(out string) string {
 
 // The context: line counts against the budget: a map that fills it gives
 // back a glance line instead.
-func TestContextLineCountsAgainstBudget(t *testing.T) {
+// gridRepo makes a repository on main whose map with --budget 24 fills
+// its budget: 12 folders of 4 folders of 3 Go files each, committed.
+func gridRepo(t *testing.T) string {
+	t.Helper()
 	isolateGit(t)
 	dir := t.TempDir()
 	words := strings.Fields("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima")
 	for _, d := range words {
 		for _, sub := range words[:4] {
 			for _, f := range []string{"a.go", "b.go", "c.go"} {
-				write(t, filepath.Join(dir, d, sub+"x", f), "package a\n")
+				write(t, filepath.Join(dir, d, sub+"x", f), "package a\n\nfunc F() {}\n")
 			}
 		}
 	}
 	gitIn(t, dir, "init", "-q", "-b", "main")
 	gitIn(t, dir, "add", ".")
 	gitIn(t, dir, "commit", "-qm", "init")
+	t.Chdir(dir)
+	return dir
+}
+
+// The context: line counts against the budget: a map that fills it gives
+// back a glance line instead.
+func TestContextLineCountsAgainstBudget(t *testing.T) {
+	dir := gridRepo(t)
 	gitIn(t, dir, "checkout", "-qb", "feature")
 	write(t, filepath.Join(dir, "alpha", "alphax", "a.go"), "package a\n\nfunc A() {}\n")
 	gitIn(t, dir, "commit", "-qam", "A")
-	t.Chdir(dir)
 
 	on, off := agentView(t, Options{Budget: 24}, "."), agentView(t, Options{Budget: 24, NoContext: true}, ".")
 	if !strings.HasPrefix(on, "context: ") || !strings.Contains(off, "↳ ") {
@@ -234,5 +246,169 @@ func TestContextLineCountsAgainstBudget(t *testing.T) {
 	}
 	if strings.Count(on, "↳ ") != strings.Count(off, "↳ ")-1 {
 		t.Errorf("want one glance fewer with the context: line:\non:\n%s\noff:\n%s", on, off)
+	}
+}
+
+// In --changed a glance lists the changed files of a collapsed folder:
+// entries, never given up for the context: line, which then goes on top.
+func TestContextLineNeverCostsEntries(t *testing.T) {
+	dir := gridRepo(t)
+	write(t, filepath.Join(dir, "main.go"), "package main\n\nfunc main() {}\n")
+	gitIn(t, dir, "add", "main.go")
+	gitIn(t, dir, "commit", "-qm", "main")
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".go") {
+			write(t, p, "package a\n\nfunc F() { println(1) }\n")
+		}
+		if d != nil && d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := Options{Budget: 24, Changed: true, Outline: true}
+	on := agentView(t, opt, ".")
+	opt.NoContext = true
+	off := agentView(t, opt, ".")
+	if !strings.HasPrefix(on, "context: ") || !strings.Contains(on, "main.go 3L [M]\n  ↳ F:3 [changed]\n") || !strings.Contains(off, "[M], ") {
+		t.Fatalf("want a context: line and glances listing changed files:\non:\n%s\noff:\n%s", on, off)
+	}
+	if got := unmark(on); got != off {
+		t.Errorf("context cost entries:\non, unmarked:\n%s\noff:\n%s", got, off)
+	}
+}
+
+// The line is fitted into the budget only when the map prints a mark: a
+// change that shows nowhere costs nothing.
+func TestContextLineOnlyForPrintedMarks(t *testing.T) {
+	dir := gridRepo(t)
+	// under a folder that stays collapsed, and outside any symbol
+	write(t, filepath.Join(dir, "lima", "alphax", "a.go"), "// a comment\npackage a\n\nfunc F() {}\n")
+	on, off := agentView(t, Options{Budget: 24, Outline: true}, "."), agentView(t, Options{Budget: 24, Outline: true, NoContext: true}, ".")
+	if on != off {
+		t.Errorf("nothing marked, so nothing should change:\non:\n%s\noff:\n%s", on, off)
+	}
+}
+
+// A file named in the top level's "… also:" list carries its mark there;
+// one that isn't printed doesn't count.
+func TestContextMarksOverflowList(t *testing.T) {
+	isolateGit(t)
+	dir := t.TempDir()
+	for i := range 120 { // no digits: not folded into one run
+		write(t, filepath.Join(dir, string(rune('a'+i/26))+string(rune('a'+i%26))+".md"), "# t\n")
+	}
+	write(t, filepath.Join(dir, "goz.md"), "# goz\n")
+	write(t, filepath.Join(dir, "pkg", "p.go"), "package p\n")
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-qm", "init")
+	gitIn(t, dir, "checkout", "-qb", "feature")
+	write(t, filepath.Join(dir, "goz.md"), "# goz\n\nmore\n")
+	gitIn(t, dir, "commit", "-qam", "goz")
+	old := time.Now().Add(-48 * time.Hour) // the oldest file: past the 100 entries listed in full
+	if err := os.Chtimes(filepath.Join(dir, "goz.md"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	out := agentView(t, Options{}, ".")
+	also := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "… also: ") {
+			also = l
+		}
+	}
+	if !strings.Contains(also, " goz.md [branch]") || !strings.HasPrefix(out, "context: 1 changed file\n") {
+		t.Errorf("want goz.md marked in the also: line:\n%s", out)
+	}
+}
+
+// A file listed next to a big folder keeps its symbol detail: files and
+// folders load separately.
+func TestContextFileNextToBigFolder(t *testing.T) {
+	isolateGit(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "main.go"), "package main\n\nfunc main() {}\n")
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-qm", "init")
+	for i := range 205 {
+		write(t, filepath.Join(dir, "data", fmt.Sprintf("d%03d.txt", i)), "x\n")
+	}
+	write(t, filepath.Join(dir, "main.go"), "package main\n\nfunc main() { println(1) }\n")
+	t.Chdir(dir)
+	out := agentView(t, Options{}, "data", "main.go")
+	if !strings.Contains(out, "  3 func main() [changed]\n") || strings.Contains(out, "skipped") || !strings.HasPrefix(out, "context: 1 changed symbol vs HEAD\n") {
+		t.Errorf("want main marked:\n%s", out)
+	}
+}
+
+// Files that are new at their path by their git status (added with
+// git add -N, renamed) don't get every symbol marked [changed].
+func TestContextNewByGitStatus(t *testing.T) {
+	isolateGit(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "files.go"), "package files\n\nfunc A() {}\n\nfunc B() {}\n")
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-qm", "init")
+	write(t, filepath.Join(dir, "ita.go"), "package files\n\nfunc C() {}\n")
+	gitIn(t, dir, "add", "-N", "ita.go")
+	gitIn(t, dir, "mv", "files.go", "moved.go")
+	t.Chdir(dir)
+	for _, c := range []struct{ file, status string }{{"ita.go", "[A]"}, {"moved.go", "[R]"}} {
+		out := agentView(t, Options{}, c.file)
+		if !strings.Contains(out, c.status) || strings.Contains(out, "[changed]") {
+			t.Errorf("%s: want %s and no symbol marks:\n%s", c.file, c.status, out)
+		}
+		if out := agentView(t, Options{Outline: true}, "."); strings.Contains(out, "[changed]") {
+			t.Errorf("map: want no symbol marks:\n%s", out)
+		}
+	}
+}
+
+// One context: line for the run; with several repositories, each part
+// starts with the repository's folder name.
+func TestContextOneLineForSeveralRepos(t *testing.T) {
+	isolateGit(t)
+	parent := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		dir := filepath.Join(parent, name)
+		write(t, filepath.Join(dir, "x.go"), "package x\n\nfunc X() {}\n")
+		gitIn(t, dir, "init", "-q", "-b", "main")
+		gitIn(t, dir, "add", ".")
+		gitIn(t, dir, "commit", "-qm", "init")
+		write(t, filepath.Join(dir, "x.go"), "package x\n\nfunc X() { println(1) }\n")
+	}
+	t.Chdir(parent)
+	out := agentView(t, Options{}, filepath.Join("alpha", "x.go"), filepath.Join("beta", "x.go"))
+	if strings.Count(out, "context:") != 1 || !strings.HasPrefix(out, "context: alpha: 1 changed symbol vs HEAD; beta: 1 changed symbol vs HEAD\n") {
+		t.Errorf("want one context: line naming both repositories:\n%s", out)
+	}
+	if out := agentView(t, Options{}, filepath.Join("alpha", "x.go")); !strings.HasPrefix(out, "context: 1 changed symbol vs HEAD\n") {
+		t.Errorf("one repository: no name:\n%s", out)
+	}
+}
+
+// An untracked symlink to /dev/zero doesn't hang loading the context.
+func TestContextSymlinkToDevZero(t *testing.T) {
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("no /dev/zero")
+	}
+	dir := gridRepo(t)
+	if err := os.Symlink("/dev/zero", filepath.Join(dir, "zero.go")); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan string, 1)
+	go func() { done <- agentView(t, Options{Outline: true}, ".") }()
+	select {
+	case out := <-done:
+		if !strings.Contains(out, "zero.go -> /dev/zero") {
+			t.Errorf("want the symlink listed:\n%s", out)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("glint -A --outline hangs on an untracked symlink to /dev/zero")
 	}
 }

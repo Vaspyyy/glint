@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,10 +26,12 @@ import (
 // committed on this branch since it left the default branch, which look
 // clean to git status. Symbols get both marks.
 
-// workCtx is one repository's context.
+// workCtx is one repository's context, as loaded for some of its paths.
 type workCtx struct {
-	info *repo.Info  // nil, or Git false, outside a repository
-	st   *work.State // never nil
+	info    *repo.Info  // nil, or Git false, outside a repository
+	st      *work.State // never nil
+	cs      *contexts
+	printed int // marks printed so far
 }
 
 // rel returns abs relative to the repository root, the form prism's marks
@@ -40,19 +43,37 @@ func (c *workCtx) rel(abs string) (string, bool) {
 	return c.info.Rel(abs)
 }
 
-// fileMarks returns what the text views print after a file (repo-relative):
-// " [branch]" when it changed only on this branch, else "" (uncommitted
-// changes show as its git status).
-func (c *workCtx) fileMarks(rel string) string {
+// fileMarks returns the marks the text views give a file (repo-relative):
+// "branch" when it changed only on this branch (uncommitted changes show
+// as its git status). They count once they're printed (print).
+func (c *workCtx) fileMarks(rel string) []string {
 	if c == nil {
+		return nil
+	}
+	if m := c.st.PeekFile(rel); slices.Equal(m, []string{work.MarkBranch}) {
+		return m
+	}
+	return nil
+}
+
+// print returns marks as printed after a name (" [branch]") and counts
+// them as shown: only what's printed goes in the context: line.
+func (c *workCtx) print(marks []string) string {
+	if len(marks) == 0 {
 		return ""
 	}
-	m := c.st.PeekFile(rel)
-	if !slices.Equal(m, []string{work.MarkBranch}) {
-		return ""
+	if c != nil {
+		c.st.Show(marks...)
+		c.printed++
 	}
-	c.st.Show(m...)
-	return work.Suffix(m)
+	return suffix(marks)
+}
+
+// count is a folder's " [N branch]": N files below it changed only on this
+// branch. It counts as shown.
+func (c *workCtx) count(n int) string {
+	c.print([]string{work.MarkBranch})
+	return " [" + strconv.Itoa(n) + " " + work.MarkBranch + "]"
 }
 
 // marks returns what is printed after a symbol: " [changed]", " [branch]"
@@ -61,31 +82,55 @@ func (c *workCtx) marks(ref string) string {
 	if c == nil {
 		return ""
 	}
-	return work.Suffix(c.st.Marks(ref))
+	m := c.st.Marks(ref)
+	if len(m) > 0 {
+		c.printed++
+	}
+	return suffix(m)
 }
 
-// isNew reports whether every line of a file is new: it's untracked or
-// added. Its git status ([new], [A]) says so, so the text views leave
-// its symbols unmarked rather than marking every one of them.
-func isNew(s git.Status) bool { return s.Untracked() || s.X == 'A' }
+// claimLine reports whether the context: line still has to be fitted into
+// a budget: the first map that prints a mark claims it, since there's one
+// line for the whole run.
+func (c *workCtx) claimLine() bool {
+	if c == nil || c.cs == nil || c.cs.claimed {
+		return false
+	}
+	c.cs.claimed = true
+	return true
+}
 
-// contexts loads the context of the repositories a run lists: one load
-// per repository, scoped to the paths listed in it, so a big repository's
-// git status only looks at those. A map without an outline only needs
-// file marks, so it skips the hunks and outlines.
+func suffix(marks []string) string { return work.Suffix(marks) }
+
+// isNew reports whether every line of a file is new at its path: it's
+// untracked, added (also with git add -N), renamed or copied. prism/changes
+// doesn't follow renames, so it marks every symbol of such a file; its git
+// status ([new], [A], [R], [C]) says that already, so the text views
+// leave its symbols unmarked. JSON keeps the marks.
+func isNew(s git.Status) bool {
+	return s.Untracked() || s.X == 'A' || s.Y == 'A' || s.X == 'R' || s.X == 'C'
+}
+
+// contexts loads the context of the repositories a run lists, scoped to
+// the paths listed in each, so a big repository's git status only looks
+// at those. Files and folders of one repository load separately, in
+// parallel: a file always gets symbol detail, while a map without an
+// outline only needs file marks, and a big folder next to a file mustn't
+// push the file's load over prism's limit for symbol detail.
 type contexts struct {
 	off     bool
 	outline bool // maps show symbols (--outline), so they need symbol detail too
-	byRoot  map[string]*group
+	byKey   map[string]*group
 	groups  []*group
 	mu      sync.Mutex
-	used    []*workCtx // in the order they were first waited for: one context: line each
+	used    []*workCtx // in the order they were first waited for
+	claimed bool       // a map has fitted the context: line into its budget
 }
 
-// group is the paths of one repository.
+// group is the listed files, or the listed folders, of one repository.
 type group struct {
 	paths []string          // absolute
-	files bool              // a file is listed: its symbols are shown
+	files bool              // files: their symbols are shown
 	here  func() *repo.Info // the working directory's repository, when it's this one
 	get   func() *workCtx
 }
@@ -93,7 +138,7 @@ type group struct {
 // newContexts is a run's contexts. With off (--no-context,
 // PRISM_NO_CONTEXT=1 or --no-git) nothing is loaded and nothing marked.
 func newContexts(off, outline bool) *contexts {
-	return &contexts{off: off, outline: outline, byRoot: map[string]*group{}}
+	return &contexts{off: off, outline: outline, byKey: map[string]*group{}}
 }
 
 // add registers a listed path (a directory, or a file) and returns a
@@ -103,7 +148,7 @@ func newContexts(off, outline bool) *contexts {
 // than run twice.
 func (cs *contexts) add(path string, dir bool, here func() *repo.Info) func() *workCtx {
 	if cs.off {
-		c := &workCtx{st: work.Load(nil, work.Changes, true)}
+		c := &workCtx{st: work.Load(nil, work.Changes, true), cs: cs}
 		return func() *workCtx { return c }
 	}
 	abs, err := filepath.Abs(path)
@@ -116,17 +161,20 @@ func (cs *contexts) add(path string, dir bool, here func() *repo.Info) func() *w
 	}
 	root := git.FindRoot(parent)
 	if root == "" {
-		c := &workCtx{st: work.Load(nil, work.Changes, false)} // not in a repository: no git to run
+		c := &workCtx{st: work.Load(nil, work.Changes, false), cs: cs} // not in a repository: no git to run
 		return func() *workCtx { return c }
 	}
-	g := cs.byRoot[root]
+	key := root + "\x00dir"
+	if !dir {
+		key = root + "\x00file"
+	}
+	g := cs.byKey[key]
 	if g == nil {
-		g = &group{}
-		cs.byRoot[root] = g
+		g = &group{files: !dir}
+		cs.byKey[key] = g
 		cs.groups = append(cs.groups, g)
 	}
 	g.paths = append(g.paths, abs)
-	g.files = g.files || !dir
 	if here != nil && g.here == nil && sameRepo(".", parent) {
 		g.here = here
 	}
@@ -141,6 +189,7 @@ func (cs *contexts) start() {
 		go func() { ch <- g.load(!g.files && !cs.outline) }()
 		g.get = sync.OnceValue(func() *workCtx {
 			c := <-ch
+			c.cs = cs
 			cs.mu.Lock()
 			cs.used = append(cs.used, c)
 			cs.mu.Unlock()
@@ -192,27 +241,49 @@ func sameRepo(a, b string) bool {
 	return root != "" && root == git.FindRoot(absB)
 }
 
-// lines returns the context: lines to print at the top, once everything
-// has been rendered.
-func (cs *contexts) lines() []string {
-	var out []string
+// line returns the context: line to print at the top, once everything has
+// been rendered, or "". There's one line for the run: when more than one
+// repository contributed, each one's part starts with its folder's name.
+func (cs *contexts) line() string {
+	var roots []string
+	parts := map[string][]string{}
 	for _, c := range cs.used {
-		if l := c.st.Line(); l != "" && !slices.Contains(out, l) {
-			out = append(out, l)
+		p, ok := strings.CutPrefix(c.st.Line(), "context: ")
+		if !ok || p == "" {
+			continue
+		}
+		root := ""
+		if c.info != nil {
+			root = c.info.Root
+		}
+		if _, seen := parts[root]; !seen {
+			roots = append(roots, root)
+		}
+		if !slices.Contains(parts[root], p) {
+			parts[root] = append(parts[root], p)
 		}
 	}
-	return out
+	if len(roots) == 0 {
+		return ""
+	}
+	var out []string
+	for _, root := range roots {
+		p := strings.Join(parts[root], "; ")
+		if len(roots) > 1 {
+			p = filepath.Base(root) + ": " + p
+		}
+		out = append(out, p)
+	}
+	return "context: " + strings.Join(out, "; ")
 }
 
 // markTree marks the files of a map that changed only on this branch, and
 // counts them in every folder above them; a folded run of entries carries
 // its members' marks. prefix is the listing root relative to the
-// repository root. It returns whether a listed file with an outline
-// changed (so --outline may mark its symbols) and whether a file got a
-// mark.
-func markTree(root *node, c *workCtx, prefix string) (changed, marked bool) {
+// repository root. The marks count as shown only once they're printed.
+func markTree(root *node, c *workCtx, prefix string) {
 	if c == nil || c.st.Changes == nil {
-		return false, false
+		return
 	}
 	for _, f := range c.st.Changes.Files {
 		rel := f
@@ -235,10 +306,8 @@ func markTree(root *node, c *workCtx, prefix string) (changed, marked bool) {
 		if n == nil || (n.dir && !n.gitlink) {
 			continue // not listed: filtered out, deleted, or inside a folder that wasn't scanned
 		}
-		changed = changed || (HasOutline(n.name) && !isNew(n.git))
-		if n.marks = c.fileMarks(f); n.marks != "" {
-			marked = true
-			if s := n.inSeries; s != nil && s.marks == "" {
+		if n.marks = c.fileMarks(f); len(n.marks) > 0 {
+			if s := n.inSeries; s != nil && len(s.marks) == 0 {
 				s.marks = n.marks
 			}
 			for _, d := range dirs {
@@ -249,5 +318,4 @@ func markTree(root *node, c *workCtx, prefix string) (changed, marked bool) {
 			}
 		}
 	}
-	return changed, marked
 }

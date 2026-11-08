@@ -154,8 +154,8 @@ render/ (1 file, 63B; newest file 5m ago) [1 branch]
 ```
 
 - Files committed on this branch since it left the default branch are marked `[branch]`, and folders count them (`[1 branch]`). Files with uncommitted changes keep their git status (`[M]`, `[new]`, …), which says more than a mark would.
-- Symbols get `[changed]` (uncommitted) or `[branch]`, in `glint -A <file>` and with `--outline`. The symbols of a new file aren't marked: its `[new]` already says they're all new.
-- The `context:` line at the top says what the marks are based on. It counts against the budget.
+- Symbols get `[changed]` (uncommitted) or `[branch]`, in `glint -A <file>` and with `--outline`. The symbols of a new, added or renamed file aren't marked: its `[new]`, `[A]` or `[R]` already says they're all new at that path.
+- The `context:` line at the top says what the marks are based on, one line for the whole run. It counts against the budget by taking the place of a glance line, never of a listed file.
 
 Context only marks: the same entries are listed with it or without it. It costs a few git commands, which run while glint reads the tree and look only at what's listed: `glint -A <file>` asks git about that file, and a map without `--outline` only needs to know which files changed. Plain listings (`glint -l`, `glint -T`, …) never load it, and `--no-context` or `PRISM_NO_CONTEXT=1` turns it off, for scripts and tests that compare outputs.
 
