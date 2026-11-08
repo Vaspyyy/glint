@@ -37,7 +37,7 @@ func TestItemsFields(t *testing.T) {
 		a.Commit == nil || a.Commit.Hash != "b681ef1" || a.Commit.Count != 4 || a.Children != nil {
 		t.Errorf("file: %+v", a)
 	}
-	if l := items[1]; l.Type != "symlink" || l.Target != "gone" || !l.Broken {
+	if l := items[1]; l.Type != "symlink" || l.LinkTarget != "gone" || !l.Broken {
 		t.Errorf("symlink: %+v", l)
 	}
 	if d := items[2]; d.Type != "dir" || d.Error != "permission denied" || d.DirSize == nil || *d.DirSize != 10 {

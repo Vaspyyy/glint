@@ -38,6 +38,7 @@ type Options struct {
 	Ignore   []string      // name globs to drop
 	NoGit    bool
 	Long     bool // mode and age on every line
+	Heat     bool // single file with --json: count the commits touching it
 
 	sameAge   string // set when most top-level entries share an age: said once in the header
 	workspace bool   // listing a folder of projects that isn't itself a repo
@@ -1759,7 +1760,7 @@ func fileNode(abs string, st fs.FileInfo, opt Options) *node {
 	if repo != nil {
 		n.git = repo.Status(abs)
 		if !n.git.Untracked() && !n.git.Ignored() {
-			hist := repo.History(filepath.Dir(abs), []string{n.name}, false)
+			hist := repo.History(filepath.Dir(abs), []string{n.name}, opt.Heat)
 			n.commit = hist[n.name]
 		}
 	}

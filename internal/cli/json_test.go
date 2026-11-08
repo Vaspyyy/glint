@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,6 +94,31 @@ func glintResult(t *testing.T, env *report.Decoded) report.Glint {
 	return g
 }
 
+// listing returns a listing's items, which are always present.
+func listing(t *testing.T, g report.Glint) []report.GlintEntry {
+	t.Helper()
+	if g.Items == nil {
+		t.Fatalf("a listing without items: %+v", g)
+	}
+	return *g.Items
+}
+
+// output runs glint and returns what it printed.
+func output(t *testing.T, args ...string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	run(args, &out, &bytes.Buffer{})
+	return out.Bytes()
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 func sameDir(t *testing.T, a, b string) bool {
 	t.Helper()
 	ra, err1 := filepath.EvalSymlinks(a)
@@ -117,6 +145,9 @@ func TestListingJSON(t *testing.T) {
 	write(t, filepath.Join(dir, "b.go"), "package b\n")
 	write(t, filepath.Join(dir, "a.txt"), "hello\n")
 	write(t, filepath.Join(dir, "sub", "c.txt"), "x\n")
+	if err := os.Symlink("a.txt", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(dir)
 
 	env, status := runJSON(t, "--json", "--no-git")
@@ -133,19 +164,44 @@ func TestListingJSON(t *testing.T) {
 	if g.File != nil {
 		t.Errorf("a listing has no file: %+v", g.File)
 	}
+	if real, _ := filepath.EvalSymlinks(dir); g.Dir != real {
+		t.Errorf("dir %q, want the working directory %q", g.Dir, real)
+	}
+	items := listing(t, g)
 	var names []string
-	for _, it := range g.Items {
+	for _, it := range items {
 		names = append(names, it.Name)
 	}
-	if !slices.Equal(names, []string{"sub", "a.txt", "b.go"}) {
+	if !slices.Equal(names, []string{"sub", "a.txt", "b.go", "link"}) {
 		t.Fatalf("items %q", names)
 	}
-	sub, txt := g.Items[0], g.Items[1]
+	sub, txt, link := items[0], items[1], items[3]
 	if sub.Type != "dir" || sub.Path != "sub" || len(sub.Children) != 0 {
 		t.Errorf("sub: %+v", sub)
 	}
 	if txt.Type != "file" || txt.Path != "a.txt" || txt.Size != 6 || txt.Mode != "-rw-r--r--" || txt.Octal != "0644" || txt.Modified.IsZero() {
 		t.Errorf("a.txt: %+v", txt)
+	}
+	if link.Type != "symlink" || link.LinkTarget != "a.txt" || link.Broken {
+		t.Errorf("link: %+v", link)
+	}
+
+	// a symlink's target is no ref: "target" is reserved for refs
+	if refs, err := report.Refs(output(t, "--json", "--no-git")); err != nil || len(refs) != 0 {
+		t.Errorf("a listing has no refs, got %q (%v)", refs, err)
+	}
+}
+
+// An empty directory still prints "items": [].
+func TestEmptyListingJSON(t *testing.T) {
+	isolate(t)
+	t.Chdir(t.TempDir())
+	env, _ := runJSON(t, "--json", "--no-git")
+	if items := listing(t, glintResult(t, env)); len(items) != 0 {
+		t.Errorf("items %+v", items)
+	}
+	if out := output(t, "--json", "--no-git"); !bytes.Contains(out, []byte(`"items": []`)) {
+		t.Errorf("no empty items list:\n%s", out)
 	}
 }
 
@@ -163,7 +219,7 @@ func TestTreeJSON(t *testing.T) {
 	if status != 0 {
 		t.Errorf("exit %d", status)
 	}
-	got := entries(glintResult(t, env).Items)
+	got := entries(listing(t, glintResult(t, env)))
 	want := []entry{
 		{root + "/src", []entry{
 			{root + "/src/lib", []entry{{root + "/src/lib/util.go", nil}}},
@@ -177,7 +233,7 @@ func TestTreeJSON(t *testing.T) {
 
 	// -L limits the depth
 	env, _ = runJSON(t, "--json", "--no-git", "-T", "-L", "1", root)
-	if items := glintResult(t, env).Items; len(items) != 2 || len(items[0].Children) != 0 {
+	if items := listing(t, glintResult(t, env)); len(items) != 2 || len(items[0].Children) != 0 {
 		t.Errorf("-L 1: %+v", entries(items))
 	}
 }
@@ -212,6 +268,13 @@ func TestFileJSON(t *testing.T) {
 	if f.Path != path || f.Lines != 11 || f.Size != int64(len(src)) {
 		t.Errorf("file: path %q, %d lines, %d bytes", f.Path, f.Lines, f.Size)
 	}
+	if f.Mode != "-rw-r--r--" || f.Modified.IsZero() || f.Kind != "" || f.Image != "" || f.LinkTarget != "" {
+		t.Errorf("file facts: %+v", f)
+	}
+	// committed and clean: no git status, but a last commit
+	if f.Git != "" || f.Commit == nil || f.Commit.Subject != "init" || f.Commit.Hash == "" || f.Commit.Author != "t" || f.Commit.Time.IsZero() {
+		t.Errorf("git: %q, last commit %+v", f.Git, f.Commit)
+	}
 	want := []report.Symbol{
 		{Ref: path + ":globSet", Path: path, Name: "globSet", Kind: "type", Line: 3, End: 3, Sig: "type globSet []string"},
 		{Ref: path + ":globSet.match", Path: path, Name: "globSet.match", Kind: "func", Line: 5, End: 7, Sig: "func (g globSet) match(p string) bool"},
@@ -240,6 +303,89 @@ func TestFileJSON(t *testing.T) {
 	if env.Repo.Git {
 		t.Errorf("--no-git: repo %+v", env.Repo)
 	}
+	if f := glintResult(t, env).File; f.Git != "" || f.Commit != nil {
+		t.Errorf("--no-git: git %q, last commit %+v", f.Git, f.Commit)
+	}
+}
+
+// The git status and last commit of the header, and -H for the commit count.
+func TestFileJSONGit(t *testing.T) {
+	isolate(t)
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "a.go"), "package a\n")
+	write(t, filepath.Join(proj, "b.go"), "package a\n")
+	gitInit(t, proj)
+	write(t, filepath.Join(proj, "a.go"), "package a\n\nfunc A() {}\n")
+	gitRun(t, proj, "commit", "-qam", "Add A")
+	write(t, filepath.Join(proj, "b.go"), "package a\n\nfunc B() {}\n")
+	write(t, filepath.Join(proj, "new.go"), "package a\n")
+	t.Chdir(proj)
+
+	file := func(args ...string) *report.GlintFile {
+		t.Helper()
+		env, _ := runJSON(t, append([]string{"-A", "--json"}, args...)...)
+		return glintResult(t, env).File
+	}
+	if f := file("a.go"); f.Git != "" || f.Commit == nil || f.Commit.Subject != "Add A" {
+		t.Errorf("a.go: git %q, last commit %+v", f.Git, f.Commit)
+	}
+	if f := file("-H", "a.go"); f.Commit == nil || f.Commit.Count != 2 {
+		t.Errorf("-H a.go: last commit %+v, want 2 commits", f.Commit)
+	}
+	if f := file("b.go"); f.Git != "modified" || f.Commit == nil || f.Commit.Subject != "init" {
+		t.Errorf("b.go: git %q, last commit %+v", f.Git, f.Commit)
+	}
+	if f := file("new.go"); f.Git != "untracked" || f.Commit != nil {
+		t.Errorf("new.go: git %q, last commit %+v", f.Git, f.Commit)
+	}
+}
+
+// What the header says a file is: image (with its size), binary, vendored,
+// generated, or a symlink (with its target, which is no ref).
+func TestFileJSONKinds(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	var pic bytes.Buffer
+	if err := pngEncode(&pic, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "logo.png"), pic.String())
+	write(t, filepath.Join(dir, "tool"), "\x7fELF\x00\x01")
+	write(t, filepath.Join(dir, "vendor", "lib", "lib.go"), "package lib\n\nfunc Lib() {}\n")
+	write(t, filepath.Join(dir, "app.min.js"), "var a=1\n")
+	write(t, filepath.Join(dir, "real.go"), "package x\n\nfunc Real() {}\n")
+	if err := os.Symlink("real.go", filepath.Join(dir, "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	file := func(path string) *report.GlintFile {
+		t.Helper()
+		env, _ := runJSON(t, "-A", "--json", "--no-git", path)
+		return glintResult(t, env).File
+	}
+	if f := file("logo.png"); f.Kind != "image" || f.Image != "3x2" || f.Lines != 0 || len(f.Symbols) != 0 {
+		t.Errorf("logo.png: %+v", f)
+	}
+	if f := file("tool"); f.Kind != "binary" || f.Image != "" || f.Lines != 0 {
+		t.Errorf("tool: %+v", f)
+	}
+	if f := file(filepath.Join("vendor", "lib", "lib.go")); f.Kind != "vendored" || len(f.Symbols) != 1 {
+		t.Errorf("vendor/lib/lib.go: %+v", f)
+	}
+	if f := file("app.min.js"); f.Kind != "generated" {
+		t.Errorf("app.min.js: %+v", f)
+	}
+	if f := file("link.go"); f.LinkTarget != "real.go" || f.Kind != "" {
+		t.Errorf("link.go: %+v", f)
+	}
+	if refs, err := report.Refs(output(t, "-A", "--json", "--no-git", "link.go")); err != nil || len(refs) != 0 {
+		t.Errorf("a symlink's target is no ref, got %q (%v)", refs, err)
+	}
+}
+
+func pngEncode(w io.Writer, width, height int) error {
+	return png.Encode(w, image.NewGray(image.Rect(0, 0, width, height)))
 }
 
 // A file without an outline still gets "symbols": [].

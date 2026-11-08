@@ -51,7 +51,7 @@ func toItems(es []*fsx.Entry, limit int, shown, total *int) []report.GlintEntry 
 			Name: e.Name, Path: e.Path, Type: fileType(e), Kind: kind.String(),
 			Size: e.Size, Mode: e.Mode.String(), Octal: octal(e.Mode), Modified: e.ModTime,
 			Owner: e.Sys.Owner, Group: e.Sys.Group,
-			Target: e.Target, Broken: e.Broken, Git: e.Git.String(),
+			LinkTarget: e.Target, Broken: e.Broken, Git: e.Git.String(),
 			Children: toItems(e.Children, limit, shown, total),
 		}
 		if e.HasDirSize {

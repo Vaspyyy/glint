@@ -624,7 +624,7 @@ func (a *app) list(w io.Writer, width int) int {
 		}
 		env := a.envelope()
 		items, truncated := render.Items(all, report.MaxItems)
-		env.Result, env.Truncated = report.Glint{Items: items}, truncated
+		env.Result, env.Truncated = report.Glint{Items: &items, Dir: workDir()}, truncated
 		return a.writeJSON(w, env)
 	}
 

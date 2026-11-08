@@ -163,13 +163,13 @@ Paths are relative to the repository root. The format is specified in [Prism](ht
 
 `--json` prints one JSON document per run: the envelope glint shares with seek, recap and crux, specified in [Prism](https://github.com/Vaspyyy/prism/blob/main/docs/output.md). It has `schema`, `tool`, `version`, `args` and `repo` (root, branch, HEAD, uncommitted changes), then `result`, or `error` when the run failed.
 
-- `glint --json [paths]` puts the listing in `result.items`: each entry's name, path (as listed, relative to the working directory like `ls`), type, kind, size, mode, modification time, owner and git status, plus the description, last commit or folder size with `-p`, `-c` and `--du`. With `-T`, folders hold their contents in `children`. A file given without `-A` is listed as one entry.
-- `glint -A --json <file>` puts one file in `result.file`: its `path` (relative to the repository root, absolute outside it, like the text header), `lines`, `size` and `symbols`. Each symbol has a `ref` that seek, recap and crux accept (`internal/files/files.go:globSet.match`).
+- `glint --json [paths]` puts the listing in `result.items` (always present, `[]` for an empty folder): each entry's name, path (as listed, relative to `result.dir`, the working directory, like `ls`), type, kind, size, mode, modification time, owner, git status and a symlink's `link_target`, plus the description, last commit or folder size with `-p`, `-c` and `--du`. With `-T`, folders hold their contents in `children`. A file given without `-A` is listed as one entry.
+- `glint -A --json <file>` puts one file in `result.file`: its `path` (relative to the repository root, absolute outside it, like the text header), `lines`, `size`, `modified`, `mode`, `kind` (`image`, `binary`, `vendored` or `generated`; left out for plain text), `image` (an image's size), `link_target`, `git` (`modified`, `untracked`, `ignored`, …; left out when the file is clean), `last_commit` and `symbols`. Each symbol has a `ref` that seek, recap and crux accept (`internal/files/files.go:globSet.match`). The `commits` count in `last_commit` is only counted with `-H`, in listings too.
 - Failures are an envelope too, with `error.code` `usage` (bad arguments) or `failed` (anything else, such as a missing path), and glint exits with the same code as without `--json`. A missing path fails the whole run instead of listing the other paths.
 - Views that show more than a listing (`-P`, `-C`, `-M`, `--thumbs`, `-i`, `-W`, and `-A` with a directory) have no JSON output and fail with a `usage` error. `--help`, `--version` and `--init` still print text.
 - Lists are capped at 10,000 entries, and `truncated` says when that cut something.
 
-**Breaking change:** up to glint 0.7.0, `glint --json` printed a bare array of entries. That array is gone: the entries are now `result.items` inside the envelope, so a script that read the array needs `.result.items` (for example `glint --json | jq '.result.items[]'`).
+**Breaking change:** up to glint 0.7.0, `glint --json` printed a bare array of entries. That array is gone: the entries are now `result.items` inside the envelope, so a script that read the array needs `.result.items` (for example `glint --json | jq '.result.items[]'`). A symlink's target, which was `target`, is now `link_target`, since `target` holds refs in every tool's JSON.
 
 ```console
 $ glint -A --json internal/textw/textw.go
@@ -185,6 +185,9 @@ $ glint -A --json internal/textw/textw.go
       "path": "internal/textw/textw.go",
       "lines": 111,
       "size": 2122,
+      "modified": "2026-11-03T05:32:30+01:00",
+      "mode": "-rw-r--r--",
+      "last_commit": { "hash": "e06701b", "subject": "Add text width helpers", "author": "Ada", "time": "2026-11-03T05:32:30+01:00", "commits": 1 },
       "symbols": [
         {
           "ref": "internal/textw/textw.go:Width",

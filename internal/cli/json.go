@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,19 @@ func wantsJSON(args []string) bool {
 	return on
 }
 
+// workDir is the working directory, with symlinks resolved like repo.root:
+// what listing paths are relative to.
+func workDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(wd); err == nil {
+		return real
+	}
+	return wd
+}
+
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
@@ -61,8 +75,7 @@ func (a *app) envelope() *report.Envelope {
 		info = here()
 	}
 	if info == nil || info.Root == "" {
-		cwd, _ := os.Getwd()
-		info = &repo.Info{Root: cwd}
+		info = &repo.Info{Root: workDir()}
 	}
 	return report.New("glint", version, a.args, info)
 }
@@ -146,7 +159,7 @@ func (a *app) fileJSON() int {
 	if st.IsDir() {
 		return usage("-A --json takes a file and prints its outline; for a directory, use glint --json %s (its listing)", path)
 	}
-	file, truncated := agent.File(path, st, agent.Options{}, here, report.MaxItems)
+	file, truncated := agent.File(path, st, agent.Options{NoGit: o.noGit, Heat: o.heat}, here, report.MaxItems)
 	env := a.envelope()
 	env.Result, env.Truncated = report.Glint{File: &file}, truncated
 	return a.writeJSON(a.out, env)
