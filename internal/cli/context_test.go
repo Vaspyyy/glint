@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +48,7 @@ func makeContextRepo(t *testing.T, dir string) {
 	} {
 		t.Setenv(k, v)
 	}
-	for _, k := range []string{"PRISM_NO_CONTEXT", "PRISM_SESSION", "CLAUDE_CODE_SESSION_ID", "T3CODE_THREAD_ID", "GIT_DIR", "GIT_WORK_TREE"} {
+	for _, k := range []string{"PRISM_NO_CONTEXT", "PRISM_SESSION", "CLAUDE_CODE_SESSION_ID", "T3CODE_THREAD_ID", "GIT_DIR", "GIT_WORK_TREE", "GIT_OPTIONAL_LOCKS"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
@@ -269,6 +270,21 @@ func TestWorkspaceLoadsOpenedProjectsOnly(t *testing.T) {
 			}
 		}
 	}
+	// alpha's index is stale (a clean file's stat data changed): a git
+	// status that may take the index lock would write it back
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(ws, "alpha", "render.go"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(ws, "alpha", ".git", "index")
+	indexData, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexInfo, err := os.Stat(index)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// each command as: the directory it runs in, GIT_OPTIONAL_LOCKS, its arguments
 	run := logGitAs(t, `"$(pwd)|${GIT_OPTIONAL_LOCKS-}|$*"`)
 	prism := regexp.MustCompile(`^(status --porcelain -z|merge-base|diff --name-only|diff -U0|rev-parse --path-format|for-each-ref)`)
@@ -311,6 +327,12 @@ func TestWorkspaceLoadsOpenedProjectsOnly(t *testing.T) {
 	}
 	if on, _ := run("-A", "."); off == on || markRe.ReplaceAllString(on[strings.Index(on, "\n")+1:], "") != off {
 		t.Errorf("--no-context should only drop the marks and the context: line\non:\n%s\noff:\n%s", on, off)
+	}
+	if data, err := os.ReadFile(index); err != nil || !bytes.Equal(data, indexData) {
+		t.Errorf("glint wrote alpha's index")
+	}
+	if info, err := os.Stat(index); err != nil || !info.ModTime().Equal(indexInfo.ModTime()) {
+		t.Errorf("glint wrote alpha's index")
 	}
 	t.Setenv("PRISM_NO_CONTEXT", "1")
 	if _, log := run("-A", "."); context(log) != nil {

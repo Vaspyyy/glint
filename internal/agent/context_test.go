@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,7 @@ func isolateGit(t *testing.T) {
 	} {
 		t.Setenv(k, v)
 	}
-	for _, k := range []string{"PRISM_NO_CONTEXT", "PRISM_SESSION", "CLAUDE_CODE_SESSION_ID", "T3CODE_THREAD_ID", "GIT_DIR", "GIT_WORK_TREE"} {
+	for _, k := range []string{"PRISM_NO_CONTEXT", "PRISM_SESSION", "CLAUDE_CODE_SESSION_ID", "T3CODE_THREAD_ID", "GIT_DIR", "GIT_WORK_TREE", "GIT_OPTIONAL_LOCKS"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
@@ -495,8 +496,8 @@ func TestContextWorkspace(t *testing.T) {
 	}
 }
 
-// In a workspace map the context: line fits in the budget at every size,
-// and it never costs an entry: at most a glance gives way.
+// In a workspace map the context: line takes a line of the budget that's
+// still free, and only when there's none, the last glance: never an entry.
 func TestContextWorkspaceBudget(t *testing.T) {
 	ws := workspaceDir(t)
 	grid := gridRepo(t)
@@ -509,21 +510,127 @@ func TestContextWorkspaceBudget(t *testing.T) {
 	if err := os.Rename(grid, filepath.Join(ws, "alpha")); err != nil {
 		t.Fatal(err)
 	}
+	// old loose folders too big to open from up here: each gets a glance
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, d := range []string{"misc", "notes", "tmp"} {
+		for _, sub := range strings.Split("abcdefghij", "") {
+			for _, f := range []string{"a.md", "a.txt"} {
+				p := filepath.Join(ws, d, sub, f)
+				write(t, p, "a\n")
+				if err := os.Chtimes(p, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
 	t.Chdir(ws)
 	glance := func(l string) bool { return strings.HasPrefix(strings.TrimLeft(l, " "), "↳ ") }
-	marked := 0
-	for budget := 16; budget <= 64; budget += 3 {
-		on, off := agentView(t, Options{Budget: budget}, "."), agentView(t, Options{Budget: budget, NoContext: true}, ".")
-		if strings.HasPrefix(on, "context: alpha: 1 changed file\n") {
-			marked++
-		}
-		entries := slices.DeleteFunc(strings.Split(off, "\n"), glance)
-		kept := slices.DeleteFunc(strings.Split(unmark(on), "\n"), glance)
-		if n := strings.Count(on, "\n"); n > budget || !slices.Equal(kept, entries) || strings.Count(on, "↳ ") < strings.Count(off, "↳ ")-1 {
-			t.Errorf("budget %d: %d lines; want every entry kept, at most a glance fewer\non:\n%s\noff:\n%s", budget, n, on, off)
+	fits, full := 0, 0
+	sweep := func() {
+		for budget := 16; budget <= 88; budget += 3 {
+			on, off := agentView(t, Options{Budget: budget}, "."), agentView(t, Options{Budget: budget, NoContext: true}, ".")
+			if !strings.HasPrefix(on, "context: alpha: 1 changed file\n") {
+				continue
+			}
+			n, m := strings.Count(on, "\n"), strings.Count(off, "\n")
+			if m < budget { // a line is free: it takes that, and nothing gives way
+				fits++
+				if unmark(on) != off {
+					t.Errorf("budget %d: the line fits, so nothing should give way\non:\n%s\noff:\n%s", budget, on, off)
+				}
+				continue
+			}
+			full++
+			entries := slices.DeleteFunc(strings.Split(off, "\n"), glance)
+			kept := slices.DeleteFunc(strings.Split(unmark(on), "\n"), glance)
+			if n != m || strings.Count(on, "↳ ") != strings.Count(off, "↳ ")-1 || !slices.Equal(kept, entries) {
+				t.Errorf("budget %d: the map is full: want the line in place of a glance, every entry kept\non:\n%s\noff:\n%s", budget, on, off)
+			}
 		}
 	}
-	if marked == 0 {
-		t.Error("alpha was never opened and marked")
+	sweep()
+	// empty folders add lines the budget didn't plan for, so the map fills it
+	for _, e := range []string{"empty1", "empty2", "empty3"} {
+		if err := os.Mkdir(filepath.Join(ws, "alpha", e), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
+	sweep()
+	if fits == 0 || full == 0 {
+		t.Errorf("want maps with a free line (got %d) and full ones (got %d)", fits, full)
+	}
+}
+
+// Projects of the same name in two workspace maps of one run are told apart
+// in the context: line.
+func TestContextSameNameProjects(t *testing.T) {
+	ws1, ws2 := workspaceDir(t), workspaceDir(t)
+	out := agentView(t, Options{}, ws1, ws2)
+	want := "context: " + filepath.Base(ws1) + "/alpha: 4 changed files; " + filepath.Base(ws2) + "/alpha: 4 changed files\n"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("want the context: line\n%sgot:\n%s", want, out)
+	}
+}
+
+func TestShortNames(t *testing.T) {
+	sep := string(filepath.Separator)
+	p := func(parts ...string) string { return sep + strings.Join(parts, sep) }
+	roots := []string{p("a", "ws1", "alpha"), p("b", "ws1", "alpha"), p("c", "beta"), p("d", "alpha"), p("glint")}
+	got := shortNames(roots)
+	want := map[string]string{
+		roots[0]: strings.Join([]string{"a", "ws1", "alpha"}, sep),
+		roots[1]: strings.Join([]string{"b", "ws1", "alpha"}, sep),
+		roots[2]: "beta",
+		roots[3]: "d" + sep + "alpha",
+		roots[4]: "glint",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// staleIndex makes the index of the repository in dir stale (a clean file's
+// stat data changed), so a git status that may take the index lock writes
+// it back, and returns a check that it wasn't written.
+func staleIndex(t *testing.T, dir, file string) func() {
+	t.Helper()
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, file), past, past); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(dir, ".git", "index")
+	read := func() ([]byte, time.Time) {
+		data, err := os.ReadFile(index)
+		info, err2 := os.Stat(index)
+		if err != nil || err2 != nil {
+			t.Fatal(err, err2)
+		}
+		return data, info.ModTime()
+	}
+	data, mtime := read()
+	return func() {
+		t.Helper()
+		if d, m := read(); !bytes.Equal(d, data) || !m.Equal(mtime) {
+			t.Errorf("the index of %s was written", dir)
+		}
+	}
+}
+
+// A project's symbol load whose files all turn out to be outside it loads
+// nothing: in particular not the whole repository, with git's optional
+// locks on.
+func TestContextNestedPathsOutside(t *testing.T) {
+	dir := workRepo(t)
+	unwritten := staleIndex(t, dir, filepath.Join("cmd", "main.go"))
+	files, syms := newContexts(false, true).nested(dir, []string{filepath.Join(t.TempDir(), "x.go")})
+	if files == nil || syms == nil {
+		t.Fatal("want both loads")
+	}
+	if c := files(); c.st.Changes == nil || len(c.st.Changes.Files) != 4 {
+		t.Errorf("want the project's file marks")
+	}
+	if c := syms(); c.st.Changes != nil {
+		t.Errorf("want nothing loaded, got %d changed files", len(c.st.Changes.Files))
+	}
+	unwritten()
 }

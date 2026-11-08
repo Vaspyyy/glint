@@ -1473,6 +1473,35 @@ func render(w io.Writer, n *node, depth int, opt Options) (collapsed int) {
 	return collapsed
 }
 
+// footerLines is the length of the note under a map with collapsed folders.
+const footerLines = 2
+
+// lineWriter counts the lines written through it.
+type lineWriter struct {
+	w     io.Writer
+	lines int
+}
+
+func (l *lineWriter) Write(p []byte) (int, error) {
+	l.lines += bytes.Count(p, []byte{'\n'})
+	return l.w.Write(p)
+}
+
+// symbolLines counts the symbol lines a map prints under its files
+// (--outline), which its budget leaves out.
+func symbolLines(n *node, per int) (c int) {
+	kids, _ := shown(n, per)
+	for _, k := range kids {
+		switch {
+		case k.dir && k.expanded:
+			c += symbolLines(k, per)
+		case !k.dir && len(k.symbols) > 0:
+			c++
+		}
+	}
+	return c
+}
+
 // openedRepo is a git repository found below a map's root outside git that
 // the map opens up, with its context loading.
 type openedRepo struct {
@@ -1527,6 +1556,8 @@ func outlinedFiles(n *node, per int) []string {
 // listDir prints the map of a directory. ctx is the context of its
 // repository.
 func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
+	lw := &lineWriter{w: w} // how long the header turns out
+	w = lw
 	s := gather(dir, opt)
 	if opt.Changed && s.repo == nil && len(s.repos) == 0 {
 		fmt.Fprintf(w, "%s\n--changed needs git: this folder is not in a git repo and contains none. Use --since 2h for recently modified files.\n", s.rootAbs)
@@ -1542,7 +1573,7 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	treeOpt := opt
 	treeOpt.Budget = max(opt.Budget-headerLines, 10)
 	treeOpt.workspace = s.repo == nil && projectOf(root) == nil
-	used, glances := expand(root, treeOpt)
+	_, glances := expand(root, treeOpt)
 	// the projects a workspace map opens up get their own context, loaded
 	// next to the rest of glint's work; the others stay one line each
 	var opened []openedRepo
@@ -1737,9 +1768,12 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 	if len(marking) > 0 {
 		// The context: line counts against the budget. A dry run of the
 		// rendering says whether this map prints a mark; if so and the
-		// tree is full, it gives back its last glance, a line of detail.
-		// In --changed a glance lists changed files, entries that are
-		// never given up: the line goes on top of the budget.
+		// map leaves no line of its budget free, it gives back its last
+		// glance, a line of detail. The map's length is counted as the
+		// budget counts it: the header as printed, the tree without the
+		// symbol lines of --outline, and the footer. In --changed a
+		// glance lists changed files, entries that are never given up:
+		// the line goes on top of the budget.
 		printed := func() (n int, skipped bool) {
 			for _, c := range marking {
 				n += c.printed
@@ -1748,9 +1782,14 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 			return n, skipped
 		}
 		before, _ := printed()
-		render(io.Discard, root, 0, opt)
+		dry := &lineWriter{w: io.Discard}
+		lines := lw.lines
+		if render(dry, root, 0, opt) > 0 {
+			lines += footerLines
+		}
+		lines += dry.lines - symbolLines(root, opt.PerDir)
 		if after, skipped := printed(); after > before || skipped {
-			if marking[0].claimLine() && used >= treeOpt.Budget && !opt.Changed {
+			if marking[0].claimLine() && lines >= opt.Budget && !opt.Changed {
 				for _, g := range slices.Backward(glances) {
 					if g.glance {
 						g.glance = false
@@ -1761,7 +1800,7 @@ func listDir(w io.Writer, dir string, opt Options, ctx func() *workCtx) {
 		}
 	}
 	collapsed := render(w, root, 0, opt)
-	if collapsed > 0 {
+	if collapsed > 0 { // footerLines
 		fmt.Fprintf(w, "\n%d dirs not expanded (budget %d lines; the top level is always listed in full); `glint -A <dir>` opens one.\n", collapsed, opt.Budget)
 	}
 }

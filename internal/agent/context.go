@@ -236,10 +236,9 @@ func (cs *contexts) nested(dir string, outlined []string) (files, syms func() *w
 					rels = append(rels, rel)
 				}
 			}
-			c := &workCtx{info: info, nested: true}
-			if !git || (paths != nil && rels == nil) {
-				c.st = work.Load(info, work.Changes, false)
-			} else {
+			// nothing to load unless it's a repository and the paths are in it
+			c := &workCtx{info: info, nested: true, st: work.Load(nil, work.Changes, false)}
+			if git && (paths == nil || rels != nil) {
 				c.st = work.LoadWith(info, work.Options{Layers: work.Changes,
 					Changes: changes.Options{Paths: rels, FilesOnly: filesOnly, NoLocks: true}})
 			}
@@ -300,7 +299,7 @@ func sameRepo(a, b string) bool {
 // line returns the context: line to print at the top, once everything has
 // been rendered, or "". There's one line for the run: when more than one
 // repository contributed, or a project opened in a workspace map did, each
-// one's part starts with its folder's name.
+// one's part starts with its name (shortNames).
 func (cs *contexts) line() string {
 	var roots []string
 	parts := map[string][]string{}
@@ -325,15 +324,52 @@ func (cs *contexts) line() string {
 	if len(roots) == 0 {
 		return ""
 	}
+	names := shortNames(roots)
 	var out []string
 	for _, root := range roots {
 		p := strings.Join(parts[root], "; ")
 		if len(roots) > 1 || named {
-			p = filepath.Base(root) + ": " + p
+			p = names[root] + ": " + p
 		}
 		out = append(out, p)
 	}
 	return "context: " + strings.Join(out, "; ")
+}
+
+// shortNames names each repository root by its folder's name, or, where
+// two roots share it, by as much of the end of their paths as tells them
+// apart (ws1/alpha, ws2/alpha).
+func shortNames(roots []string) map[string]string {
+	sep := string(filepath.Separator)
+	parts := make([][]string, len(roots))
+	n := make([]int, len(roots)) // path elements used
+	for i, r := range roots {
+		parts[i], n[i] = strings.Split(filepath.Clean(r), sep), 1
+	}
+	name := func(i int) string { return strings.Join(parts[i][max(len(parts[i])-n[i], 0):], sep) }
+	for {
+		same := map[string][]int{}
+		for i := range roots {
+			same[name(i)] = append(same[name(i)], i)
+		}
+		longer := false
+		for _, is := range same {
+			for _, i := range is {
+				if len(is) > 1 && n[i] < len(parts[i]) {
+					n[i]++
+					longer = true
+				}
+			}
+		}
+		if !longer {
+			break
+		}
+	}
+	out := map[string]string{}
+	for i, r := range roots {
+		out[r] = name(i)
+	}
+	return out
 }
 
 // markTree marks the files of a map that changed only on this branch, and
