@@ -108,7 +108,7 @@ func Collect(dir string, repo *git.Repo) *Stats {
 		if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
 			return
 		}
-		b, err := os.ReadFile(files[i])
+		b, err := fsx.ReadFile(files[i], 0)
 		if err != nil || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
 			return
 		}

@@ -8,8 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Vaspyyy/glint/internal/fsx"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
+
+// maxManifest is how much of a manifest (go.mod, package.json, …) is read.
+const maxManifest = 8 << 20
 
 type Info struct {
 	Stack  string // "Go", "Rust", "Next.js", ...
@@ -57,7 +61,7 @@ func Detect(dir string, names []string) *Info {
 		}
 	}
 	read := func(name string) string {
-		b, _ := os.ReadFile(filepath.Join(dir, name))
+		b, _ := fsx.ReadFile(filepath.Join(dir, name), maxManifest)
 		return string(b)
 	}
 

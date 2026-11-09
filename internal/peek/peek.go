@@ -10,7 +10,6 @@ import (
 	"debug/elf"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -45,6 +44,8 @@ func Of(e *fsx.Entry) *fsx.Peek {
 		return dir(e)
 	case !e.Mode.IsRegular() && !e.IsLink:
 		return nil
+	case e.IsLink && !fsx.Regular(e.Path):
+		return nil // a link to a pipe or a device: nothing to read, and reading it may never return
 	case e.Size == 0:
 		return plain("empty")
 	}
@@ -105,7 +106,7 @@ func dir(e *fsx.Entry) *fsx.Peek {
 const sniffSize = 8 << 10
 
 func content(e *fsx.Entry) *fsx.Peek {
-	f, err := os.Open(e.Path)
+	f, err := fsx.Open(e.Path)
 	if err != nil {
 		return &fsx.Peek{Text: "no access", Color: theme.Red}
 	}
@@ -187,7 +188,7 @@ func elfInfo(path string) *fsx.Peek {
 }
 
 func tarCount(path string, gz bool) (int, error) {
-	f, err := os.Open(path)
+	f, err := fsx.Open(path)
 	if err != nil {
 		return 0, err
 	}
@@ -223,7 +224,7 @@ func tarCount(path string, gz bool) (int, error) {
 var pageRe = regexp.MustCompile(`/Type\s*/Page[^s]`)
 
 func pdfPages(path string) int {
-	f, err := os.Open(path)
+	f, err := fsx.Open(path)
 	if err != nil {
 		return 0
 	}

@@ -7,7 +7,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -55,6 +54,8 @@ func (m *model) preview(e *fsx.Entry, w, h int) []string {
 		return add([]string{p.Fg(theme.Red).Render("broken link → " + e.Target)})
 	case e.IsDir:
 		return add(m.dirPreview(e, w, body))
+	case !e.Mode.IsRegular() && !e.IsLink, e.IsLink && !fsx.Regular(e.Path):
+		return lines // a pipe or a device, also behind a link, whatever it's called: nothing to read
 	case img.Supported(ext):
 		im, err := img.Thumb(e.Path, max(w, h*2))
 		if err != nil {
@@ -65,8 +66,6 @@ func (m *model) preview(e *fsx.Entry, w, h int) []string {
 		return add(zipList(e.Path, body))
 	case ext == "tar" || ext == "tgz" || strings.HasSuffix(strings.ToLower(e.Name), ".tar.gz"):
 		return add(tarList(e.Path, ext != "tar", body))
-	case !e.Mode.IsRegular():
-		return lines
 	}
 	return add(m.textPreview(e, ext, w, body))
 }
@@ -96,7 +95,7 @@ func (m *model) dirPreview(e *fsx.Entry, w, h int) []string {
 }
 
 func (m *model) textPreview(e *fsx.Entry, ext string, w, h int) []string {
-	f, err := os.Open(e.Path)
+	f, err := fsx.Open(e.Path)
 	if err != nil {
 		return []string{m.p.Fg(theme.Red).Render("⚠ " + render.ErrMessage(err))}
 	}
@@ -180,7 +179,7 @@ func zipList(path string, h int) []string {
 }
 
 func tarList(path string, gz bool, h int) []string {
-	f, err := os.Open(path)
+	f, err := fsx.Open(path)
 	if err != nil {
 		return []string{err.Error()}
 	}

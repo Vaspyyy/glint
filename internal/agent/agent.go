@@ -981,7 +981,7 @@ func details(root *node, opt Options) {
 			f.binary = !looksText(f.abs)
 			return
 		}
-		data, err := os.ReadFile(f.abs)
+		data, err := fsx.ReadFile(f.abs, 0)
 		if err != nil {
 			return
 		}
@@ -1000,7 +1000,7 @@ func details(root *node, opt Options) {
 }
 
 func looksText(path string) bool {
-	f, err := os.Open(path)
+	f, err := fsx.Open(path)
 	if err != nil {
 		return false
 	}
@@ -1825,8 +1825,8 @@ var (
 func readmeSummary(dir string) string {
 	var data []byte
 	for _, name := range readmeRes {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			data = b[:min(len(b), 16<<10)]
+		if b, err := fsx.ReadFile(filepath.Join(dir, name), 16<<10); err == nil {
+			data = b
 			break
 		}
 	}
@@ -1907,11 +1907,11 @@ func largestSource(root *node) string {
 				walk(k)
 			case k.series != nil:
 				for _, m := range k.series {
-					if sourceExts[extKey(m.name)] && !generatedName(m.name) {
+					if m.target == "" && m.mode.IsRegular() && sourceExts[extKey(m.name)] && !generatedName(m.name) {
 						cands = append(cands, m)
 					}
 				}
-			case k.target == "" && sourceExts[extKey(k.name)] && !generatedName(k.name):
+			case k.target == "" && k.mode.IsRegular() && sourceExts[extKey(k.name)] && !generatedName(k.name):
 				cands = append(cands, k)
 			}
 		}
@@ -1924,7 +1924,7 @@ func largestSource(root *node) string {
 	cands = cands[:min(len(cands), 8)]
 	fsx.Parallel(len(cands), func(i int) {
 		if cands[i].lines == 0 && !cands[i].binary {
-			if data, err := os.ReadFile(cands[i].abs); err == nil && bytes.IndexByte(data[:min(len(data), 8000)], 0) < 0 {
+			if data, err := fsx.ReadFile(cands[i].abs, 0); err == nil && bytes.IndexByte(data[:min(len(data), 8000)], 0) < 0 {
 				cands[i].lines = bytes.Count(data, []byte{'\n'})
 			}
 		}
