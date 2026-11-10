@@ -64,7 +64,7 @@ func remember(dir string) {
 	history = out
 	p := historyPath()
 	if os.MkdirAll(filepath.Dir(p), 0o755) == nil {
-		os.WriteFile(p, []byte(strings.Join(history, "\n")+"\n"), 0o644)
+		regfile.Write(p, []byte(strings.Join(history, "\n")+"\n"), 0o644) // not into a pipe in its place
 	}
 }
 

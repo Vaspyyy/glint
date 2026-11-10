@@ -4,12 +4,14 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Vaspyyy/glint/internal/regfile/pipetest"
 )
 
 // Opening a named pipe to read it waits until something writes to it. A
@@ -39,9 +41,7 @@ func TestPipesDontHangAListing(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := syscall.Mkfifo(pipe, 0o644); err != nil {
-				t.Skip("no named pipes here:", err)
-			}
+			pipetest.Pipe(t, pipe)
 			views := [][]string{
 				{"-A"}, {"-A", "--outline"}, {"-A", "-l"}, {"-p"}, {"-C"}, {"-l"}, {"-lp"}, {"-T"}, {"-lcH"},
 				{"--thumbs"}, {"--json"}, {"-A", name}, {"-A", "--json", name}, {"-p", name},
@@ -65,5 +65,86 @@ func TestPipesDontHangAListing(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The config file in its usual place can be a pipe or a link to
+// /dev/null: glint runs as without one. A pipe named with --config is
+// read (--config <(…)).
+func TestConfigThatIsNoFile(t *testing.T) {
+	cfg := isolate(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ".hidden"), "")
+	write(t, filepath.Join(dir, "shown"), "")
+	t.Chdir(dir)
+	list := func(what string, args ...string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		pipetest.Returns(t, what, func() {
+			if status := run(append(args, "-1"), &out, &errOut); status != 0 {
+				t.Errorf("%s: status %d, %s", what, status, errOut.String())
+			}
+		})
+		return out.String()
+	}
+	usual := filepath.Join(cfg, "glint", "config.toml")
+	pipetest.Pipe(t, usual)
+	if out := list("a pipe in the usual place"); !strings.Contains(out, "shown") || strings.Contains(out, ".hidden") {
+		t.Errorf("a pipe in the usual place:\n%s", out)
+	}
+	if err := os.Remove(usual); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(os.DevNull, usual); err != nil {
+		t.Fatal(err)
+	}
+	if out := list("a link to /dev/null in the usual place"); !strings.Contains(out, "shown") || strings.Contains(out, ".hidden") {
+		t.Errorf("a link to /dev/null in the usual place:\n%s", out)
+	}
+	named := filepath.Join(t.TempDir(), "named.toml")
+	pipetest.Pipe(t, named)
+	go os.WriteFile(named, []byte("all = 1\n"), 0o644)
+	if out := list("a pipe named with --config", "--config", named); !strings.Contains(out, ".hidden") {
+		t.Errorf("--config with a pipe that says all = 1:\n%s", out)
+	}
+}
+
+// The links of a series of files are counted like the files: their lines
+// are part of what the series line says, and the largest are named.
+func TestSeriesOfLinksHasItsLines(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	for i, name := range []string{"one.py", "two.py", "three.py", "four.py"} {
+		write(t, filepath.Join(dir, "real", name), strings.Repeat("x = 1\n", 100*(i+1)))
+		if err := os.Symlink(filepath.Join("real", name), filepath.Join(dir, fmt.Sprintf("lnk%d.py", i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+	var out, errOut bytes.Buffer
+	run([]string{"-A", "--no-git"}, &out, &errOut)
+	for _, want := range []string{"lnk{1..4}.py ×4 100–400L", "lnk4.py 400L"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("glint -A doesn't say %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// What isn't a file is no source file, whatever it's called: a pipe, and
+// a series of them, aren't among the largest.
+func TestLargestSourceFilesAreFiles(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a.py"), strings.Repeat("x = 1\n", 10))
+	write(t, filepath.Join(dir, "b.py"), strings.Repeat("x = 1\n", 20))
+	for _, name := range []string{"solo.py", "p1.py", "p2.py", "p3.py"} {
+		pipetest.Pipe(t, filepath.Join(dir, name))
+	}
+	t.Chdir(dir)
+	var out, errOut bytes.Buffer
+	pipetest.Returns(t, "glint -A", func() { run([]string{"-A", "--no-git"}, &out, &errOut) })
+	want := "largest source files (excl. vendored/generated): b.py 20L, a.py 10L\n"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("glint -A doesn't say %q:\n%s", want, out.String())
 	}
 }

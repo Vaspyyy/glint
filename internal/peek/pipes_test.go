@@ -3,7 +3,10 @@
 package peek
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Vaspyyy/glint/internal/fsx"
 	"github.com/Vaspyyy/glint/internal/regfile/pipetest"
@@ -40,5 +43,28 @@ func TestOfSkipsPipesUnderAnyName(t *testing.T) {
 				t.Errorf("Of(%s) = %+v, want nothing for a pipe", e.Name, pk)
 			}
 		})
+	}
+}
+
+// ffprobe opens the file itself, so it gets a time limit, and so does
+// what it started: a wrapper script's ffprobe keeps the output open after
+// the script is killed.
+func TestProbeGivesUp(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nsleep 30\necho late\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobeOnce.Do(func() {})
+	defer func(path string, limit time.Duration) { ffprobePath, probeLimit = path, limit }(ffprobePath, probeLimit)
+	ffprobePath, probeLimit = shim, 300*time.Millisecond
+	start := time.Now()
+	pipetest.Returns(t, "probe", func() {
+		if got := probe(filepath.Join(dir, "x.mp4")); got != "" {
+			t.Errorf("probe = %q", got)
+		}
+	})
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("probe took %v with a limit of %v", d, probeLimit)
 	}
 }

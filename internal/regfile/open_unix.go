@@ -19,3 +19,26 @@ func openNoWait(path string) (*os.File, error) {
 	}
 	return f, err
 }
+
+// OpenDir opens a folder to list it. A pipe that took its place since it
+// was seen fails at once: O_DIRECTORY doesn't open one.
+func OpenDir(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
+}
+
+// createNoWait opens path to replace its contents, creating it. A pipe
+// without a reader fails (ENXIO) instead of waiting for one, and what is
+// there is only cut short once it's known to be a regular file.
+func createNoWait(path string, perm os.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NONBLOCK, perm)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := f.Stat(); err == nil && st.Mode().IsRegular() {
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	return f, nil
+}

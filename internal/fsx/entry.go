@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Vaspyyy/glint/internal/git"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -113,7 +114,7 @@ func Stat(path string, opt Options) (*Entry, error) {
 }
 
 func ReadDir(dir string, opt Options) ([]*Entry, error) {
-	f, err := os.Open(dir)
+	f, err := regfile.OpenDir(dir)
 	if err != nil {
 		return nil, err
 	}

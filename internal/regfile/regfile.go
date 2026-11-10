@@ -4,7 +4,9 @@
 // source file, whatever a folder holds. Any of them can be a named pipe,
 // which blocks whoever opens it until something writes to it, or a device
 // that never ends, so a file called go.mod that is one of them would hang
-// a listing. Every such read goes through this package.
+// a listing. Every such read goes through this package, and so do the
+// folders glint opens (OpenDir) and the one file it writes in place
+// (Write).
 package regfile
 
 import (
@@ -28,6 +30,9 @@ func Open(path string) (*os.File, error) {
 
 func open(path string) (*os.File, int64, error) {
 	if st, err := os.Stat(path); err != nil {
+		if pe, ok := err.(*fs.PathError); ok {
+			pe.Op = "open" // as os.Open would have said
+		}
 		return nil, 0, err
 	} else if !st.Mode().IsRegular() {
 		return nil, 0, &fs.PathError{Op: "open", Path: path, Err: errNotRegular}
@@ -45,6 +50,32 @@ func open(path string) (*os.File, int64, error) {
 		return nil, 0, err
 	}
 	return f, st.Size(), nil
+}
+
+// Write writes data to path as os.WriteFile does, unless what is there
+// isn't a regular file: opening a pipe to write to it waits for a reader.
+// The check is made on the open file, and the open doesn't wait.
+func Write(path string, data []byte, perm os.FileMode) error {
+	// looked at first, like Open: opening a pipe wakes its reader
+	if st, err := os.Stat(path); err == nil && !st.Mode().IsRegular() {
+		return &fs.PathError{Op: "open", Path: path, Err: errNotRegular}
+	}
+	f, err := createNoWait(path, perm)
+	if err != nil {
+		return err
+	}
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		f.Close()
+		if err == nil {
+			err = &fs.PathError{Op: "open", Path: path, Err: errNotRegular}
+		}
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // Is reports whether path, followed through links, is a regular file.

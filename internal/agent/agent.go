@@ -991,11 +991,18 @@ func details(root *node, opt Options) {
 			return
 		}
 		if len(data) > maxLineCount {
-			return // more than its size said (it grew, or it reports none): not counted, like a big file
-		}
-		f.lines = bytes.Count(data, []byte{'\n'})
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			f.lines++
+			// more than its size said (it reports none, as in /proc, or
+			// it grew): counted without holding it
+			if n, open, err := countLines(f.abs); err == nil {
+				if f.lines = n; open {
+					f.lines++
+				}
+			}
+		} else {
+			f.lines = bytes.Count(data, []byte{'\n'})
+			if len(data) > 0 && data[len(data)-1] != '\n' {
+				f.lines++
+			}
 		}
 		if opt.Outline && HasOutline(f.name) {
 			f.symbols, f.refs = outlineRefs(f.abs, 40)
@@ -1003,31 +1010,37 @@ func details(root *node, opt Options) {
 	})
 }
 
+// maxCounted is how far countLines reads before it gives up on a file.
+var maxCounted = 1 << 30
+
 // countLines counts the line breaks of a text file of any size without
 // holding it in memory: 0 for a binary file, and for one that goes on
-// past a gigabyte.
-func countLines(path string) (int, error) {
+// past a gigabyte. open says that text follows the last line break.
+func countLines(path string) (n int, open bool, err error) {
 	f, err := regfile.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer f.Close()
 	buf := make([]byte, 256<<10)
-	n, read := 0, 0
+	read := 0
 	for {
 		k, err := f.Read(buf)
 		if read < 8000 && bytes.IndexByte(buf[:min(k, 8000-read)], 0) >= 0 {
-			return 0, nil
+			return 0, false, nil
 		}
 		n += bytes.Count(buf[:k], []byte{'\n'})
-		if read += k; read > 1<<30 {
-			return 0, nil
+		if k > 0 {
+			open = buf[k-1] != '\n'
+		}
+		if read += k; read > maxCounted {
+			return 0, false, nil
 		}
 		if err == io.EOF {
-			return n, nil
+			return n, open, nil
 		}
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 	}
 }
@@ -1940,7 +1953,8 @@ func largestSource(root *node) string {
 				walk(k)
 			case k.series != nil:
 				for _, m := range k.series {
-					if m.target == "" && m.mode.IsRegular() && sourceExts[extKey(m.name)] && !generatedName(m.name) {
+					// also the links of a series, whose lines are counted here
+					if (m.mode.IsRegular() || m.target != "" && regfile.Is(m.abs)) && sourceExts[extKey(m.name)] && !generatedName(m.name) {
 						cands = append(cands, m)
 					}
 				}
@@ -1957,7 +1971,7 @@ func largestSource(root *node) string {
 	cands = cands[:min(len(cands), 8)]
 	fsx.Parallel(len(cands), func(i int) {
 		if cands[i].lines == 0 && !cands[i].binary {
-			if n, err := countLines(cands[i].abs); err == nil {
+			if n, _, err := countLines(cands[i].abs); err == nil {
 				cands[i].lines = n
 			}
 		}

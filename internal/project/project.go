@@ -36,7 +36,7 @@ func (i *Info) Label() string {
 
 // Names reads a directory's entry names (one syscall, no stat).
 func Names(dir string) ([]string, error) {
-	f, err := os.Open(dir)
+	f, err := regfile.OpenDir(dir)
 	if err != nil {
 		return nil, err
 	}

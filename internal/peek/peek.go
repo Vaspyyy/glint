@@ -262,6 +262,7 @@ func pdfPages(path string) int {
 var (
 	ffprobeOnce sync.Once
 	ffprobePath string
+	probeLimit  = 3 * time.Second // how long ffprobe gets (a variable for the tests)
 )
 
 // probe asks ffprobe (if installed) for duration and video resolution.
@@ -270,11 +271,15 @@ func probe(path string) string {
 	if ffprobePath == "" {
 		return ""
 	}
-	// ffprobe opens the path itself: it gets a few seconds, not for ever
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// ffprobe opens the path itself: it gets a few seconds, not for ever,
+	// and neither does what it started (a wrapper script's ffprobe keeps
+	// the output open)
+	ctx, cancel := context.WithTimeout(context.Background(), probeLimit)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, ffprobePath, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1", path).Output()
+	cmd := exec.CommandContext(ctx, ffprobePath, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1", path)
+	cmd.WaitDelay = probeLimit / 6
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

@@ -29,20 +29,20 @@ type Setter interface {
 	Set(name, value string) error
 }
 
-// maxSize is how much of the config file in its usual place is read.
-const maxSize = 4 << 20
-
 // Load applies flag defaults from the config file and registers custom
 // themes. A missing file is not an error. The file in its usual place is
-// read on every run, so it has to be a regular file; one named with
-// --config (named) is read as it is, which can be a pipe: --config <(…).
+// read on every run, so a pipe or a device there (a link to /dev/null) is
+// no config; one named with --config (named) is read as it is, which can
+// be a pipe: --config <(…).
 func Load(path string, named bool, flags Setter) error {
 	var data []byte
 	var err error
 	if named {
 		data, err = os.ReadFile(path)
+	} else if st, serr := os.Stat(path); serr == nil && !st.Mode().IsRegular() && !st.IsDir() {
+		return nil
 	} else {
-		data, err = regfile.Read(path, maxSize)
+		data, err = regfile.Read(path, 0)
 	}
 	if os.IsNotExist(err) {
 		return nil

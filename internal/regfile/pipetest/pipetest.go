@@ -7,8 +7,8 @@ package pipetest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -19,8 +19,9 @@ func Pipe(t testing.TB, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(path, 0o644); err != nil {
-		t.Skip("no named pipes here:", err)
+	// the command, not the system call: Go has none for Solaris and AIX
+	if out, err := exec.Command("mkfifo", path).CombinedOutput(); err != nil {
+		t.Skip("no named pipes here:", err, string(out))
 	}
 }
 
