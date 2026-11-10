@@ -1954,7 +1954,8 @@ func largestSource(root *node) string {
 			case k.series != nil:
 				for _, m := range k.series {
 					// also the links of a series, whose lines are counted here
-					if (m.mode.IsRegular() || m.target != "" && regfile.Is(m.abs)) && sourceExts[extKey(m.name)] && !generatedName(m.name) {
+					// (the name first: asking where a link leads costs a stat)
+					if sourceExts[extKey(m.name)] && !generatedName(m.name) && (m.mode.IsRegular() || m.target != "" && regfile.Is(m.abs)) {
 						cands = append(cands, m)
 					}
 				}

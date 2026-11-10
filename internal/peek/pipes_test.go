@@ -5,6 +5,7 @@ package peek
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,4 +68,23 @@ func TestProbeGivesUp(t *testing.T) {
 	if d := time.Since(start); d > 5*time.Second {
 		t.Errorf("probe took %v with a limit of %v", d, probeLimit)
 	}
+}
+
+// What ffprobe said counts when it ended well, also when something it
+// started outlives it and keeps the output open.
+func TestProbeOfAWrapperThatLeavesAChild(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "ffprobe")
+	script := "#!/bin/sh\necho width=64\necho height=48\necho duration=2.5\n(sleep 2 &)\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobeOnce.Do(func() {})
+	defer func(path string, limit time.Duration) { ffprobePath, probeLimit = path, limit }(ffprobePath, probeLimit)
+	ffprobePath, probeLimit = shim, 600*time.Millisecond
+	pipetest.Returns(t, "probe", func() {
+		if got := probe(filepath.Join(dir, "x.mp4")); !strings.Contains(got, "64×48") {
+			t.Errorf("probe = %q, want the size ffprobe gave", got)
+		}
+	})
 }

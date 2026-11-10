@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -280,8 +281,8 @@ func probe(path string) string {
 		"-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1", path)
 	cmd.WaitDelay = probeLimit / 6
 	out, err := cmd.Output()
-	if err != nil {
-		return ""
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return "" // ErrWaitDelay: it ended well and said it all, and something it started is still there
 	}
 	var w, h string
 	var dur float64
