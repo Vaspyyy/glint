@@ -24,6 +24,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/git"
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/project"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/prism/repo"
 	"github.com/Vaspyyy/prism/work"
 )
@@ -981,7 +982,7 @@ func details(root *node, opt Options) {
 			f.binary = !looksText(f.abs)
 			return
 		}
-		data, err := os.ReadFile(f.abs)
+		data, err := regfile.Read(f.abs, maxLineCount+1)
 		if err != nil {
 			return
 		}
@@ -989,9 +990,19 @@ func details(root *node, opt Options) {
 			f.binary = true
 			return
 		}
-		f.lines = bytes.Count(data, []byte{'\n'})
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			f.lines++
+		if len(data) > maxLineCount {
+			// more than its size said (it reports none, as in /proc, or
+			// it grew): counted without holding it
+			if n, open, err := countLines(f.abs); err == nil {
+				if f.lines = n; open {
+					f.lines++
+				}
+			}
+		} else {
+			f.lines = bytes.Count(data, []byte{'\n'})
+			if len(data) > 0 && data[len(data)-1] != '\n' {
+				f.lines++
+			}
 		}
 		if opt.Outline && HasOutline(f.name) {
 			f.symbols, f.refs = outlineRefs(f.abs, 40)
@@ -999,8 +1010,43 @@ func details(root *node, opt Options) {
 	})
 }
 
+// maxCounted is how far countLines reads before it gives up on a file.
+var maxCounted = 1 << 30
+
+// countLines counts the line breaks of a text file of any size without
+// holding it in memory: 0 for a binary file, and for one that goes on
+// past a gigabyte. open says that text follows the last line break.
+func countLines(path string) (n int, open bool, err error) {
+	f, err := regfile.Open(path)
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 256<<10)
+	read := 0
+	for {
+		k, err := f.Read(buf)
+		if read < 8000 && bytes.IndexByte(buf[:min(k, 8000-read)], 0) >= 0 {
+			return 0, false, nil
+		}
+		n += bytes.Count(buf[:k], []byte{'\n'})
+		if k > 0 {
+			open = buf[k-1] != '\n'
+		}
+		if read += k; read > maxCounted {
+			return 0, false, nil
+		}
+		if err == io.EOF {
+			return n, open, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+	}
+}
+
 func looksText(path string) bool {
-	f, err := os.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return false
 	}
@@ -1825,8 +1871,8 @@ var (
 func readmeSummary(dir string) string {
 	var data []byte
 	for _, name := range readmeRes {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			data = b[:min(len(b), 16<<10)]
+		if b, err := regfile.Read(filepath.Join(dir, name), 16<<10); err == nil {
+			data = b
 			break
 		}
 	}
@@ -1907,11 +1953,13 @@ func largestSource(root *node) string {
 				walk(k)
 			case k.series != nil:
 				for _, m := range k.series {
-					if sourceExts[extKey(m.name)] && !generatedName(m.name) {
+					// also the links of a series, whose lines are counted here
+					// (the name first: asking where a link leads costs a stat)
+					if sourceExts[extKey(m.name)] && !generatedName(m.name) && (m.mode.IsRegular() || m.target != "" && regfile.Is(m.abs)) {
 						cands = append(cands, m)
 					}
 				}
-			case k.target == "" && sourceExts[extKey(k.name)] && !generatedName(k.name):
+			case k.target == "" && k.mode.IsRegular() && sourceExts[extKey(k.name)] && !generatedName(k.name):
 				cands = append(cands, k)
 			}
 		}
@@ -1924,8 +1972,8 @@ func largestSource(root *node) string {
 	cands = cands[:min(len(cands), 8)]
 	fsx.Parallel(len(cands), func(i int) {
 		if cands[i].lines == 0 && !cands[i].binary {
-			if data, err := os.ReadFile(cands[i].abs); err == nil && bytes.IndexByte(data[:min(len(data), 8000)], 0) < 0 {
-				cands[i].lines = bytes.Count(data, []byte{'\n'})
+			if n, _, err := countLines(cands[i].abs); err == nil {
+				cands[i].lines = n
 			}
 		}
 	})

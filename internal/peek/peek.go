@@ -7,20 +7,23 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Vaspyyy/glint/internal/fsx"
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/project"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -45,6 +48,8 @@ func Of(e *fsx.Entry) *fsx.Peek {
 		return dir(e)
 	case !e.Mode.IsRegular() && !e.IsLink:
 		return nil
+	case e.IsLink && !regfile.Is(e.Path):
+		return nil // a link to a pipe or a device: nothing to read, and reading it may never return
 	case e.Size == 0:
 		return plain("empty")
 	}
@@ -61,9 +66,7 @@ func Of(e *fsx.Entry) *fsx.Peek {
 			return &fsx.Peek{Text: s, Color: theme.Purple}
 		}
 	case ext == "zip" || ext == "jar" || ext == "apk" || ext == "whl" || ext == "docx" || ext == "xlsx" || ext == "epub":
-		if r, err := zip.OpenReader(e.Path); err == nil {
-			n := len(r.File)
-			r.Close()
+		if n, err := zipCount(e.Path); err == nil {
 			return &fsx.Peek{Text: plural(n, "file"), Color: theme.Red}
 		}
 	case ext == "tar" || ext == "tgz" || strings.HasSuffix(lower, ".tar.gz"):
@@ -105,7 +108,7 @@ func dir(e *fsx.Entry) *fsx.Peek {
 const sniffSize = 8 << 10
 
 func content(e *fsx.Entry) *fsx.Peek {
-	f, err := os.Open(e.Path)
+	f, err := regfile.Open(e.Path)
 	if err != nil {
 		return &fsx.Peek{Text: "no access", Color: theme.Red}
 	}
@@ -156,12 +159,34 @@ func content(e *fsx.Entry) *fsx.Peek {
 	return plain(text)
 }
 
+// zipCount is how many files a zip archive holds.
+func zipCount(path string) (int, error) {
+	f, err := regfile.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	r, err := zip.NewReader(f, st.Size())
+	if err != nil {
+		return 0, err
+	}
+	return len(r.File), nil
+}
+
 func elfInfo(path string) *fsx.Peek {
-	f, err := elf.Open(path)
+	file, err := regfile.Open(path)
 	if err != nil {
 		return plain("ELF binary")
 	}
-	defer f.Close()
+	defer file.Close()
+	f, err := elf.NewFile(file)
+	if err != nil {
+		return plain("ELF binary")
+	}
 	kind := "binary"
 	switch f.Type {
 	case elf.ET_DYN:
@@ -187,7 +212,7 @@ func elfInfo(path string) *fsx.Peek {
 }
 
 func tarCount(path string, gz bool) (int, error) {
-	f, err := os.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return 0, err
 	}
@@ -223,7 +248,7 @@ func tarCount(path string, gz bool) (int, error) {
 var pageRe = regexp.MustCompile(`/Type\s*/Page[^s]`)
 
 func pdfPages(path string) int {
-	f, err := os.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return 0
 	}
@@ -238,6 +263,7 @@ func pdfPages(path string) int {
 var (
 	ffprobeOnce sync.Once
 	ffprobePath string
+	probeLimit  = 3 * time.Second // how long ffprobe gets (a variable for the tests)
 )
 
 // probe asks ffprobe (if installed) for duration and video resolution.
@@ -246,10 +272,17 @@ func probe(path string) string {
 	if ffprobePath == "" {
 		return ""
 	}
-	out, err := exec.Command(ffprobePath, "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1", path).Output()
-	if err != nil {
-		return ""
+	// ffprobe opens the path itself: it gets a few seconds, not for ever,
+	// and neither does what it started (a wrapper script's ffprobe keeps
+	// the output open)
+	ctx, cancel := context.WithTimeout(context.Background(), probeLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffprobePath, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1", path)
+	cmd.WaitDelay = probeLimit / 6
+	out, err := cmd.Output()
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return "" // ErrWaitDelay: it ended well and said it all, and something it started is still there
 	}
 	var w, h string
 	var dur float64

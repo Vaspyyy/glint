@@ -14,6 +14,8 @@ import (
 
 	"github.com/lucasb-eyer/go-colorful"
 	"github.com/muesli/termenv"
+
+	"github.com/Vaspyyy/glint/internal/regfile"
 )
 
 type Slot int
@@ -107,7 +109,7 @@ func walPalette() (Palette, error) {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".cache")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "wal", "colors.json"))
+	data, err := regfile.Read(filepath.Join(dir, "wal", "colors.json"), 1<<20)
 	if err != nil {
 		return Palette{}, fmt.Errorf("theme wal: %w (run pywal first)", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Vaspyyy/glint/internal/git"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/prism/outline"
 	"github.com/Vaspyyy/prism/ref"
 	"github.com/Vaspyyy/prism/repo"
@@ -34,7 +35,7 @@ func Outline(path string, limit int) []Symbol {
 	if err != nil || st.Size() > outline.MaxSize {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := regfile.Read(path, outline.MaxSize+1)
 	if err != nil {
 		return nil
 	}

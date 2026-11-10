@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -29,13 +30,28 @@ type Setter interface {
 }
 
 // Load applies flag defaults from the config file and registers custom
-// themes. A missing file is not an error.
-func Load(path string, flags Setter) error {
+// themes. A missing file is not an error. The file in its usual place is
+// read on every run, so a pipe or a device there (a link to /dev/null) is
+// no config; one named with --config (named) is read as it is, which can
+// be a pipe: --config <(…).
+func Load(path string, named bool, flags Setter) error {
+	var data []byte
+	var err error
+	if named {
+		data, err = os.ReadFile(path)
+	} else if st, serr := os.Stat(path); serr == nil && !st.Mode().IsRegular() && !st.IsDir() {
+		return nil
+	} else {
+		data, err = regfile.Read(path, 0)
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
 	raw := map[string]any{}
-	if _, err := toml.DecodeFile(path, &raw); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
+	if err == nil {
+		_, err = toml.Decode(string(data), &raw)
+	}
+	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if themes, ok := raw["themes"].(map[string]any); ok {

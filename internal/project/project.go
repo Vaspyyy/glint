@@ -8,8 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
+
+// maxManifest is how much of a manifest (go.mod, package.json, …) is read.
+const maxManifest = 8 << 20
 
 type Info struct {
 	Stack  string // "Go", "Rust", "Next.js", ...
@@ -32,7 +36,7 @@ func (i *Info) Label() string {
 
 // Names reads a directory's entry names (one syscall, no stat).
 func Names(dir string) ([]string, error) {
-	f, err := os.Open(dir)
+	f, err := regfile.OpenDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +61,7 @@ func Detect(dir string, names []string) *Info {
 		}
 	}
 	read := func(name string) string {
-		b, _ := os.ReadFile(filepath.Join(dir, name))
+		b, _ := regfile.Read(filepath.Join(dir, name), maxManifest)
 		return string(b)
 	}
 
