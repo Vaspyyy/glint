@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+
+	"github.com/Vaspyyy/glint/internal/regfile"
 )
 
 func cacheHome() string {
@@ -27,7 +29,7 @@ var buckets = []struct {
 }{{"normal", 128}, {"large", 256}, {"x-large", 512}, {"xx-large", 1024}}
 
 func decodePNG(path string) (image.Image, error) {
-	f, err := os.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return nil, err
 	}

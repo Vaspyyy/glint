@@ -29,6 +29,9 @@ func TestPipesDontHangAListing(t *testing.T) {
 			dir := filepath.Join(root, "proj")
 			write(t, filepath.Join(dir, "a.go"), "package a\n\nfunc A() {}\n")
 			write(t, filepath.Join(dir, "b.go"), "package a\n\nfunc B() {}\n")
+			if name != "go.mod" {
+				write(t, filepath.Join(dir, "go.mod"), "module a\n") // a project: its README is read
+			}
 			pipe := filepath.Join(dir, name)
 			if kind != "pipe" {
 				pipe = filepath.Join(dir, ".pipe")

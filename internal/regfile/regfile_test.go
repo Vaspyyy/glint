@@ -1,6 +1,6 @@
 //go:build unix
 
-package fsx
+package regfile
 
 import (
 	"os"
@@ -46,14 +46,14 @@ func TestOpenTakesRegularFilesOnly(t *testing.T) {
 		if !filepath.IsAbs(name) {
 			path = filepath.Join(dir, name)
 		}
-		within(t, "ReadFile "+name, func() {
-			data, err := ReadFile(path, 0)
+		within(t, "Read "+name, func() {
+			data, err := Read(path, 0)
 			if (err == nil) != (want != "") || string(data) != want {
-				t.Errorf("ReadFile(%s) = %q, %v; want %q", name, data, err, want)
+				t.Errorf("Read(%s) = %q, %v; want %q", name, data, err, want)
 			}
 		})
 	}
-	if data, err := ReadFile(file, 5); err != nil || string(data) != "one\nt" {
-		t.Errorf("ReadFile(file, 5) = %q, %v; want the first 5 bytes", data, err)
+	if data, err := Read(file, 5); err != nil || string(data) != "one\nt" {
+		t.Errorf("Read(file, 5) = %q, %v; want the first 5 bytes", data, err)
 	}
 }

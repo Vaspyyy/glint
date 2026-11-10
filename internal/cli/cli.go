@@ -208,19 +208,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// the config file supplies defaults, so it must be applied before parsing
-	cfgPath, useCfg := config.Path(), true
+	cfgPath, useCfg, named := config.Path(), true, false
 	for i, arg := range args {
 		switch {
 		case arg == "--no-config":
 			useCfg = false
 		case arg == "--config" && i+1 < len(args):
-			cfgPath = args[i+1]
+			cfgPath, named = args[i+1], true
 		case strings.HasPrefix(arg, "--config="):
-			cfgPath = strings.TrimPrefix(arg, "--config=")
+			cfgPath, named = strings.TrimPrefix(arg, "--config="), true
 		}
 	}
 	if useCfg {
-		if err := config.Load(cfgPath, a.flags); err != nil {
+		if err := config.Load(cfgPath, named, a.flags); err != nil {
 			if jsonOut || a.o.json {
 				return failJSON(report.CodeFailed, err)
 			}

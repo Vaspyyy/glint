@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Vaspyyy/glint/internal/fsx"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -325,7 +325,7 @@ func copyTree(src, dst string) error {
 		case !info.Mode().IsRegular():
 			return nil // sockets, devices: skip
 		}
-		in, err := fsx.Open(p)
+		in, err := regfile.Open(p)
 		if err != nil {
 			return err
 		}

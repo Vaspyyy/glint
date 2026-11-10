@@ -12,6 +12,7 @@ import (
 
 	projects "github.com/Vaspyyy/glint/internal/dash"
 	"github.com/Vaspyyy/glint/internal/git"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/textw"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
@@ -35,7 +36,7 @@ func historyPath() string {
 
 func loadHistory() {
 	histOnce.Do(func() {
-		f, err := os.Open(historyPath())
+		f, err := regfile.Open(historyPath())
 		if err != nil {
 			return
 		}

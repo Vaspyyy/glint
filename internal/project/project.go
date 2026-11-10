@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Vaspyyy/glint/internal/fsx"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -61,7 +61,7 @@ func Detect(dir string, names []string) *Info {
 		}
 	}
 	read := func(name string) string {
-		b, _ := fsx.ReadFile(filepath.Join(dir, name), maxManifest)
+		b, _ := regfile.Read(filepath.Join(dir, name), maxManifest)
 		return string(b)
 	}
 

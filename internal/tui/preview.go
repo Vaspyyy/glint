@@ -14,6 +14,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/peek"
 	"github.com/Vaspyyy/glint/internal/project"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/render"
 	"github.com/Vaspyyy/glint/internal/textw"
 	"github.com/Vaspyyy/glint/internal/theme"
@@ -54,7 +55,7 @@ func (m *model) preview(e *fsx.Entry, w, h int) []string {
 		return add([]string{p.Fg(theme.Red).Render("broken link → " + e.Target)})
 	case e.IsDir:
 		return add(m.dirPreview(e, w, body))
-	case !e.Mode.IsRegular() && !e.IsLink, e.IsLink && !fsx.Regular(e.Path):
+	case !e.Mode.IsRegular() && !e.IsLink, e.IsLink && !regfile.Is(e.Path):
 		return lines // a pipe or a device, also behind a link, whatever it's called: nothing to read
 	case img.Supported(ext):
 		im, err := img.Thumb(e.Path, max(w, h*2))
@@ -66,6 +67,8 @@ func (m *model) preview(e *fsx.Entry, w, h int) []string {
 		return add(zipList(e.Path, body))
 	case ext == "tar" || ext == "tgz" || strings.HasSuffix(strings.ToLower(e.Name), ".tar.gz"):
 		return add(tarList(e.Path, ext != "tar", body))
+	case !e.Mode.IsRegular():
+		return lines
 	}
 	return add(m.textPreview(e, ext, w, body))
 }
@@ -95,7 +98,7 @@ func (m *model) dirPreview(e *fsx.Entry, w, h int) []string {
 }
 
 func (m *model) textPreview(e *fsx.Entry, ext string, w, h int) []string {
-	f, err := fsx.Open(e.Path)
+	f, err := regfile.Open(e.Path)
 	if err != nil {
 		return []string{m.p.Fg(theme.Red).Render("⚠ " + render.ErrMessage(err))}
 	}
@@ -162,11 +165,19 @@ func hexdump(p *theme.Painter, data []byte, h int) []string {
 }
 
 func zipList(path string, h int) []string {
-	r, err := zip.OpenReader(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return []string{err.Error()}
 	}
-	defer r.Close()
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return []string{err.Error()}
+	}
+	r, err := zip.NewReader(f, st.Size())
+	if err != nil {
+		return []string{err.Error()}
+	}
 	var out []string
 	for i, f := range r.File {
 		if i >= h {
@@ -179,7 +190,7 @@ func zipList(path string, h int) []string {
 }
 
 func tarList(path string, gz bool, h int) []string {
-	f, err := fsx.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return []string{err.Error()}
 	}

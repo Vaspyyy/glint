@@ -24,6 +24,7 @@ import (
 	"github.com/Vaspyyy/glint/internal/git"
 	"github.com/Vaspyyy/glint/internal/img"
 	"github.com/Vaspyyy/glint/internal/project"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/prism/repo"
 	"github.com/Vaspyyy/prism/work"
 )
@@ -981,13 +982,16 @@ func details(root *node, opt Options) {
 			f.binary = !looksText(f.abs)
 			return
 		}
-		data, err := fsx.ReadFile(f.abs, 0)
+		data, err := regfile.Read(f.abs, maxLineCount+1)
 		if err != nil {
 			return
 		}
 		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 			f.binary = true
 			return
+		}
+		if len(data) > maxLineCount {
+			return // more than its size said (it grew, or it reports none): not counted, like a big file
 		}
 		f.lines = bytes.Count(data, []byte{'\n'})
 		if len(data) > 0 && data[len(data)-1] != '\n' {
@@ -999,8 +1003,37 @@ func details(root *node, opt Options) {
 	})
 }
 
+// countLines counts the line breaks of a text file of any size without
+// holding it in memory: 0 for a binary file, and for one that goes on
+// past a gigabyte.
+func countLines(path string) (int, error) {
+	f, err := regfile.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	buf := make([]byte, 256<<10)
+	n, read := 0, 0
+	for {
+		k, err := f.Read(buf)
+		if read < 8000 && bytes.IndexByte(buf[:min(k, 8000-read)], 0) >= 0 {
+			return 0, nil
+		}
+		n += bytes.Count(buf[:k], []byte{'\n'})
+		if read += k; read > 1<<30 {
+			return 0, nil
+		}
+		if err == io.EOF {
+			return n, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
 func looksText(path string) bool {
-	f, err := fsx.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return false
 	}
@@ -1825,7 +1858,7 @@ var (
 func readmeSummary(dir string) string {
 	var data []byte
 	for _, name := range readmeRes {
-		if b, err := fsx.ReadFile(filepath.Join(dir, name), 16<<10); err == nil {
+		if b, err := regfile.Read(filepath.Join(dir, name), 16<<10); err == nil {
 			data = b
 			break
 		}
@@ -1924,8 +1957,8 @@ func largestSource(root *node) string {
 	cands = cands[:min(len(cands), 8)]
 	fsx.Parallel(len(cands), func(i int) {
 		if cands[i].lines == 0 && !cands[i].binary {
-			if data, err := fsx.ReadFile(cands[i].abs, 0); err == nil && bytes.IndexByte(data[:min(len(data), 8000)], 0) < 0 {
-				cands[i].lines = bytes.Count(data, []byte{'\n'})
+			if n, err := countLines(cands[i].abs); err == nil {
+				cands[i].lines = n
 			}
 		}
 	})

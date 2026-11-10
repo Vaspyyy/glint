@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Vaspyyy/glint/internal/fsx"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/render"
 	"github.com/Vaspyyy/glint/internal/textw"
 	"github.com/Vaspyyy/glint/internal/theme"
@@ -410,7 +410,7 @@ func (m *model) highlightHit(h hit, w int) string {
 
 // hitPreview shows the file around the hit, syntax highlighted, hit line marked.
 func (m *model) hitPreview(h hit, w, height int) []string {
-	data, err := os.ReadFile(h.path)
+	data, err := regfile.Read(h.path, 0)
 	if err != nil {
 		return []string{m.p.Fg(theme.Red).Render(err.Error())}
 	}

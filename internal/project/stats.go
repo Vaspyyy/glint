@@ -10,6 +10,7 @@ import (
 
 	"github.com/Vaspyyy/glint/internal/fsx"
 	"github.com/Vaspyyy/glint/internal/git"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	"github.com/Vaspyyy/glint/internal/theme"
 )
 
@@ -108,7 +109,7 @@ func Collect(dir string, repo *git.Repo) *Stats {
 		if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
 			return
 		}
-		b, err := fsx.ReadFile(files[i], 0)
+		b, err := regfile.Read(files[i], 0)
 		if err != nil || bytes.IndexByte(b[:min(len(b), 8000)], 0) >= 0 {
 			return
 		}

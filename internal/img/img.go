@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Vaspyyy/glint/internal/fsx"
+	"github.com/Vaspyyy/glint/internal/regfile"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -28,7 +28,7 @@ func Supported(ext string) bool { return exts[strings.ToLower(strings.TrimPrefix
 const maxDecodeBytes = 64 << 20
 
 func Load(path string) (image.Image, error) {
-	f, err := fsx.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func Load(path string) (image.Image, error) {
 }
 
 func Dimensions(path string) (int, int, error) {
-	f, err := fsx.Open(path)
+	f, err := regfile.Open(path)
 	if err != nil {
 		return 0, 0, err
 	}
