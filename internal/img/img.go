@@ -1,6 +1,6 @@
 // Package img decodes images and draws them in the terminal, either with
 // Unicode half blocks (works in any truecolor terminal) or the kitty
-// graphics protocol (kitty, WezTerm, Ghostty).
+// graphics protocol (kitty, WezTerm, Ghostty, lumen).
 package img
 
 import (
@@ -135,7 +135,7 @@ func KittySupported() bool {
 		return true
 	}
 	switch os.Getenv("TERM_PROGRAM") {
-	case "WezTerm", "ghostty":
+	case "WezTerm", "ghostty", "lumen":
 		return true
 	}
 	return false
