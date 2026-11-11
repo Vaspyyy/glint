@@ -53,6 +53,23 @@ The usual filters work with every view: `-a` for hidden files, `-D` and `-f` for
 <img src="assets/thumbs.png" alt="glint --thumbs showing image thumbnails" width="820">
 </div>
 
+## Copying files
+
+`glint --copy FILE...` puts files on the clipboard the way a file manager's Copy does, so you can paste them into a file manager, a chat or an upload field without opening one first. It uses `wl-copy` (from wl-clipboard) on Wayland and `xclip` on X11.
+
+With click-to-copy, a click on a name in a listing does the same:
+
+```sh
+glint --init copy         # once: makes glint the handler of glint-copy: links
+glint --hyperlink=copy    # names are links that copy the file they name
+```
+
+To keep it on, put `hyperlink = "copy"` in the [config file](#configuration). `--hyperlink=off` turns the links off for one listing, and `--hyperlink=open` makes a click open the file instead. A desktop notification confirms each click, since the listing that printed the link is long gone by then.
+
+The terminal has to support OSC 8 hyperlinks and hand unknown link types to the desktop. Alacritty does with a plain click and no configuration. Other terminals may want Ctrl+click, or keep a list of allowed link types that `glint-copy://` has to be added to.
+
+A `glint-copy:` link can come from anywhere, so the handler does one thing only: it copies a file that exists on this machine. A link printed over SSH names the machine it came from and is refused elsewhere.
+
 ## Interactive browser
 
 `glint -i` opens a full-screen browser with a preview pane. Code is syntax highlighted, markdown is styled, and images, archives and binary files get previews of their own.
@@ -254,6 +271,7 @@ Most of glint's speed comes from doing little at startup. It avoids dependencies
 internal/
   agent/    glint -A
   cli/      flags, help, watch mode, shell integration
+  clip/     the clipboard and click-to-copy links
   config/   config file and custom themes
   dash/     project dashboard
   fsx/      reading, sorting and measuring files

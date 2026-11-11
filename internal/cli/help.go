@@ -22,6 +22,7 @@ var helpGroups = []struct {
 	{"Sorting", []string{"sort", "sort-time", "sort-size", "sort-ext", "reverse", "group-dirs"}},
 	{"Details", []string{"peek", "git", "commits", "heat", "no-git", "du", "bars", "bytes", "time-style", "octal", "inode", "links", "group", "no-owner", "no-header", "no-summary"}},
 	{"Appearance", []string{"icons", "color", "theme", "classify", "hyperlink"}},
+	{"Clipboard", []string{"copy"}},
 	{"Setup", []string{"init", "auto-ls", "config", "no-config", "help", "version"}},
 }
 
@@ -75,6 +76,7 @@ func printHelp(w io.Writer, flags *pflag.FlagSet, p *theme.Painter) {
 		{"glint -T --changed", "tree of uncommitted changes"},
 		{"glint --since 2h -W", "live view of recent files"},
 		{"glint --thumbs ~/Pictures", "image thumbnails"},
+		{"glint --copy shot.png", "copy a file, then paste it anywhere"},
 		{"glint -A", "repo map for AI agents (-A file.go: outline)"},
 	} {
 		fmt.Fprintf(w, "    %s%s%s\n", long.Render(ex[0]), strings.Repeat(" ", max(1, col-4-len(ex[0]))), faint.Render(ex[1]))

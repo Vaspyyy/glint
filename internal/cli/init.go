@@ -35,8 +35,10 @@ func (a *app) init(w io.Writer) int {
 		}
 		fmt.Fprintln(w, "wrote", path)
 		return 0
+	case "copy":
+		return a.installCopyHandler(w)
 	}
-	fmt.Fprintf(a.errOut, "glint: --init wants fish or config, got %q\n", a.o.initShell)
+	fmt.Fprintf(a.errOut, "glint: --init wants fish, config or copy, got %q\n", a.o.initShell)
 	return 2
 }
 
@@ -46,7 +48,8 @@ var enumValues = map[string][]string{
 	"thumbs":     {"auto", "kitty", "blocks"},
 	"group-dirs": {"first", "last", "none"},
 	"time-style": {"relative", "iso", "long-iso", "full", "ls"},
-	"init":       {"fish", "config"},
+	"init":       {"fish", "config", "copy"},
+	"hyperlink":  hyperlinkModes,
 }
 
 func fishQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `\'`) + "'" }
