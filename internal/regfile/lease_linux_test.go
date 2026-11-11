@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Vaspyyy/glint/internal/regfile/pipetest"
 )
@@ -52,7 +53,7 @@ func TestOpenWaitsForALease(t *testing.T) {
 		if !ok {
 			t.Error("the lease wasn't given up")
 		}
-	default:
+	case <-time.After(5 * time.Second): // the read returns as the lease goes, before the holder has said so
 		t.Error("the file was read without the lease being given up")
 	}
 }

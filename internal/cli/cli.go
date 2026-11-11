@@ -3,6 +3,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,7 +60,8 @@ type options struct {
 	timeStyle                   string
 	octal, inode, links         bool
 	noOwner, group              bool
-	hyperlink                   bool
+	hyperlink                   string
+	copy                        bool
 	noHeader, noSummary         bool
 	json                        bool
 	width                       int
@@ -130,9 +132,11 @@ func newFlagSet(o *options) *pflag.FlagSet {
 	f.StringVar(&o.color, "color", "auto", "colors: auto, always, never")
 	f.StringVar(&o.theme, "theme", "catppuccin", "palette: "+strings.Join(theme.Names(), ", ")+" or custom")
 	f.BoolVarP(&o.classify, "classify", "F", false, "append indicator (/ @ * | =)")
-	f.BoolVar(&o.hyperlink, "hyperlink", false, "make names clickable (OSC 8)")
+	f.StringVar(&o.hyperlink, "hyperlink", "off", "clickable names (OSC 8): off, open, copy (a click copies the file)")
+	f.Lookup("hyperlink").NoOptDefVal = "open"
+	f.BoolVar(&o.copy, "copy", false, "put the given files on the clipboard, ready to paste")
 
-	f.StringVar(&o.initShell, "init", "", "print shell integration (fish) or write a sample config (config)")
+	f.StringVar(&o.initShell, "init", "", "shell integration (fish), a sample config (config), click-to-copy links (copy)")
 	f.BoolVar(&o.autoLs, "auto-ls", false, "with --init fish: list the directory after every cd")
 	f.StringVar(&o.configPath, "config", config.Path(), "config file")
 	f.BoolVar(&o.noConfig, "no-config", false, "ignore the config file")
@@ -140,6 +144,9 @@ func newFlagSet(o *options) *pflag.FlagSet {
 	f.BoolVarP(&o.version, "version", "v", false, "show version")
 	return f
 }
+
+// hyperlinkModes are the values of --hyperlink: what a click on a name does.
+var hyperlinkModes = []string{"off", "open", "copy"}
 
 func oneOf(name, val string, allowed ...string) error {
 	if slices.Contains(allowed, val) {
@@ -191,6 +198,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if env := os.Getenv("GLINT_OPTS"); env != "" {
 		args = append(strings.Fields(env), args...)
 	}
+	// a bare --hyperlink means open, so its value has to follow an =. One
+	// types `--hyperlink copy` all the same, and that is not a file to list.
+	for i := 0; i+1 < len(args) && args[i] != "--"; i++ {
+		if args[i] == "--hyperlink" && slices.Contains(hyperlinkModes, args[i+1]) {
+			args = slices.Concat(args[:i], []string{"--hyperlink=" + args[i+1]}, args[i+2:])
+		}
+	}
 	a := &app{out: stdout, errOut: stderr, args: given}
 	a.flags = newFlagSet(&a.o)
 	// until the flags are parsed, look for --json and --no-git in the arguments
@@ -232,6 +246,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	o := &a.o
 	jsonOut = o.json
+	if o.copy && !o.help && !o.version {
+		if o.json {
+			return die(errors.New("--copy has no JSON output"))
+		}
+		return a.copyFiles()
+	}
 	// a bare `glint [paths]` with stdout piped is almost always an agent or a script
 	// that wants facts, not an ls clone; GLINT_PLAIN=1 keeps the plain listing
 	if !o.agentMode && a.flags.NFlag() == 0 && os.Getenv("GLINT_PLAIN") == "" &&
@@ -251,11 +271,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	out := a.out
 	a.isTTY = isTerminal(out)
+	// a config file written for the flag's earlier on/off form says true
+	switch o.hyperlink {
+	case "true":
+		o.hyperlink = "open"
+	case "false":
+		o.hyperlink = "off"
+	}
 	for _, c := range [][]string{
 		{"color", o.color, "auto", "always", "never"},
 		{"icons", o.icons, "auto", "always", "never"},
 		{"group-dirs", o.groupDirs, "first", "last", "none"},
 		{"time-style", o.timeStyle, "relative", "iso", "long-iso", "full", "ls"},
+		append([]string{"hyperlink", o.hyperlink}, hyperlinkModes...),
 		append([]string{"sort", o.sortBy}, fsx.SortKeys...),
 	} {
 		if err := oneOf(c[0], c[1], c[2:]...); err != nil {

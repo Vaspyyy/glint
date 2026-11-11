@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Vaspyyy/glint/internal/clip"
 	"github.com/Vaspyyy/glint/internal/fsx"
 	"github.com/Vaspyyy/glint/internal/git"
 	"github.com/Vaspyyy/glint/internal/icons"
@@ -31,7 +32,7 @@ type Config struct {
 	Group     bool
 	Git       bool
 	Header    bool
-	Hyperlink bool
+	Hyperlink string // open or copy: what a click on a name does; anything else, no links
 	Peek      bool
 	Commits   bool
 	Heat      bool
@@ -90,8 +91,12 @@ func (r *Renderer) Name(e *fsx.Entry, full bool) string {
 		b.WriteByte(' ')
 	}
 	name := r.nameStyle(e, kind).Render(e.Name)
-	if r.cfg.Hyperlink {
-		name = hyperlink(e.Abs, name)
+	switch r.cfg.Hyperlink {
+	case "open":
+		u := url.URL{Scheme: "file", Path: e.Abs}
+		name = hyperlink(u.String(), name)
+	case "copy":
+		name = hyperlink(clip.Link(e.Abs), name)
 	}
 	b.WriteString(name)
 	if r.cfg.Classify {
@@ -157,9 +162,8 @@ func indicator(e *fsx.Entry) string {
 	return ""
 }
 
-func hyperlink(abs, text string) string {
-	u := url.URL{Scheme: "file", Path: abs}
-	return "\x1b]8;;" + u.String() + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+func hyperlink(target, text string) string {
+	return "\x1b]8;;" + target + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
 func (r *Renderer) perms(e *fsx.Entry) string {
