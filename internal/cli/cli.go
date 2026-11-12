@@ -32,7 +32,7 @@ import (
 	"github.com/Vaspyyy/prism/report"
 )
 
-const version = "0.11.1"
+const version = "0.11.2"
 
 type options struct {
 	all                         int
@@ -141,8 +141,26 @@ func newFlagSet(o *options) *pflag.FlagSet {
 	f.StringVar(&o.configPath, "config", config.Path(), "config file")
 	f.BoolVar(&o.noConfig, "no-config", false, "ignore the config file")
 	f.BoolVarP(&o.help, "help", "h", false, "show this help")
-	f.BoolVarP(&o.version, "version", "v", false, "show version")
+	f.BoolVarP(&o.version, "version", "V", false, "show version")
 	return f
+}
+
+// unknownFlag words pflag's "unknown flag: --x" and "unknown shorthand
+// flag: 'x' in -x" the way the other tools do: "unknown flag --x".
+func unknownFlag(err error) (string, bool) {
+	msg := err.Error()
+	if name, ok := strings.CutPrefix(msg, "unknown flag: "); ok {
+		return "unknown flag " + name, true
+	}
+	var c byte
+	var arg string
+	if n, _ := fmt.Sscanf(msg, "unknown shorthand flag: '%c' in %s", &c, &arg); n == 2 {
+		if arg == "-"+string(c) {
+			return "unknown flag " + arg, true
+		}
+		return fmt.Sprintf("unknown flag -%c in %s", c, arg), true
+	}
+	return "", false
 }
 
 // hyperlinkModes are the values of --hyperlink: what a click on a name does.
@@ -200,8 +218,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	// a bare --hyperlink means open, so its value has to follow an =. One
 	// types `--hyperlink copy` all the same, and that is not a file to list.
-	for i := 0; i+1 < len(args) && args[i] != "--"; i++ {
-		if args[i] == "--hyperlink" && slices.Contains(hyperlinkModes, args[i+1]) {
+	// -v is what --version once was short for; the tools agree on -V now.
+	for i := 0; i < len(args) && args[i] != "--"; i++ {
+		switch {
+		case args[i] == "-v":
+			args = slices.Concat(args[:i], []string{"-V"}, args[i+1:])
+		case args[i] == "--hyperlink" && i+1 < len(args) && slices.Contains(hyperlinkModes, args[i+1]):
 			args = slices.Concat(args[:i], []string{"--hyperlink=" + args[i+1]}, args[i+2:])
 		}
 	}
@@ -217,7 +239,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if jsonOut || a.o.json {
 			return failJSON(report.CodeUsage, err)
 		}
-		fmt.Fprintf(a.errOut, "glint: %v\nTry 'glint --help'.\n", err)
+		if msg, ok := unknownFlag(err); ok {
+			fmt.Fprintf(a.errOut, "glint: %s (see glint --help)\n", msg)
+		} else {
+			fmt.Fprintf(a.errOut, "glint: %v\nTry 'glint --help'.\n", err)
+		}
 		return 2
 	}
 
