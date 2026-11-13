@@ -30,3 +30,14 @@ func TestDetailsOfAFileLongerThanItsSize(t *testing.T) {
 		}
 	}
 }
+
+// The symbols loaded for a repo the map opens are those of the files it
+// outlines: a source file too large for details to outline isn't read.
+func TestOutlinedFilesLeaveOutTooLargeOnes(t *testing.T) {
+	small := &node{name: "small.go", abs: "/r/small.go", mode: 0o644, size: 10}
+	large := &node{name: "large.go", abs: "/r/large.go", mode: 0o644, size: maxLineCount + 1}
+	got := outlinedFiles(&node{dir: true, expanded: true, abs: "/r", kids: []*node{small, large}}, 50)
+	if len(got) != 1 || got[0] != small.abs {
+		t.Errorf("outlined: %v; want only %s", got, small.abs)
+	}
+}
