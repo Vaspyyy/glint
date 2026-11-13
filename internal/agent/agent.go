@@ -1591,7 +1591,8 @@ func openRepos(root *node, opt Options) []openedRepo {
 }
 
 // outlinedFiles returns the files below n whose symbols the map shows: the
-// source files listed in the folders it opens.
+// source files listed in the folders it opens, but none too large for
+// details to outline.
 func outlinedFiles(n *node, per int) []string {
 	var out []string
 	kids, _ := shown(n, per)
@@ -1599,7 +1600,7 @@ func outlinedFiles(n *node, per int) []string {
 		switch {
 		case k.dir && k.expanded:
 			out = append(out, outlinedFiles(k, per)...)
-		case !k.dir && k.series == nil && k.target == "" && k.mode.IsRegular() && HasOutline(k.name):
+		case !k.dir && k.series == nil && k.target == "" && k.mode.IsRegular() && k.size <= maxLineCount && HasOutline(k.name):
 			out = append(out, k.abs)
 		}
 	}
