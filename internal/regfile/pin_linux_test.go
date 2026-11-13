@@ -14,6 +14,9 @@ import (
 // get the pipe opened: the process waiting to write to it keeps waiting,
 // instead of being let through and killed when the reader closes it.
 func TestAPipeSwappedInIsLeftAlone(t *testing.T) {
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("no /proc here: Open looks and opens in two steps")
+	}
 	dir := t.TempDir()
 	file, pipe, link := filepath.Join(dir, "file"), filepath.Join(dir, "pipe"), filepath.Join(dir, "link")
 	if err := os.WriteFile(file, []byte("text\n"), 0o644); err != nil {
