@@ -113,6 +113,19 @@ If you keep your projects in one folder, `glint -P` shows them side by side: the
 
 `glint -M -i` opens the same map interactively. Select a block with the arrow keys or the mouse, press Enter to look inside it, Backspace to go up, and `o` to open that folder in the browser.
 
+`glint -A -M <dir>` prints the same measurement as text, and says what changed since the last time it measured that folder: it names the folder or file where the space actually went, not just the top-level folder that holds it.
+
+```
+since 2026-11-14 21:23 (3d ago): +54G in total (1019G → 1.0T); changes of 540M or more, where they happened ("new" can also mean under 32M before)
++57G .local/share/Steam/steamapps/
+  +36G "common/Euro Truck Simulator 2/" (new)
+  +13G workshop/content/227300/ (new)
++6.0G .codex/sessions/
+-16G .local/share/Trash/files/
+```
+
+Each run keeps a small compressed snapshot in `~/.local/state/glint/du/` (30 per folder at most; runs less than an hour apart replace each other). `--since 3d` compares with the newest snapshot that is at least three days old. Measuring with `-I` neither compares nor saves.
+
 ## For coding agents
 
 A ready-made Claude Code skill is in [`skill/SKILL.md`](skill/SKILL.md). Install it with `mkdir -p ~/.claude/skills/glint && cp skill/SKILL.md ~/.claude/skills/glint/`.

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type usage struct {
@@ -18,6 +19,7 @@ type usage struct {
 	regen int64 // of which regenerable build output / caches
 	files int
 	kids  map[string]int64 // direct children of a top-level dir
+	big   map[string]int64 // entries of snapMin or more below it, by snapshot key
 }
 
 // folders whose contents a build or package manager can recreate
@@ -75,7 +77,7 @@ func diskUsage(w io.Writer, dir string, opt Options) error {
 		if ignoredByGlob([]string{e.Name()}, opt.Ignore) {
 			continue
 		}
-		u := &usage{name: e.Name(), dir: e.IsDir(), kids: map[string]int64{}}
+		u := &usage{name: e.Name(), dir: e.IsDir(), kids: map[string]int64{}, big: map[string]int64{}}
 		list = append(list, u)
 		if !e.IsDir() {
 			if info, err := e.Info(); err == nil {
@@ -93,10 +95,43 @@ func diskUsage(w io.Writer, dir string, opt Options) error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			base := filepath.Join(abs, u.name)
+			// Folder sizes for the snapshot: WalkDir goes depth first in
+			// lexical order, so the open folders form a stack, and a folder
+			// is complete once the walk reaches a path outside it.
+			type open struct {
+				key  string // snapshot key: path below abs, "/" at the end
+				size int64
+			}
+			var stack []open
+			closeTo := func(p string) {
+				for len(stack) > 0 {
+					top := stack[len(stack)-1]
+					if p != "" && strings.HasPrefix(p, top.key) {
+						return
+					}
+					stack = stack[:len(stack)-1]
+					if top.size >= snapMin || len(stack) == 0 {
+						u.big[top.key] = top.size
+					}
+					if len(stack) > 0 {
+						stack[len(stack)-1].size += top.size
+					}
+				}
+			}
+			defer closeTo("")
 			filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
+				if err != nil {
 					return nil
 				}
+				sk, _ := filepath.Rel(abs, p)
+				sk = filepath.ToSlash(sk)
+				if d.IsDir() {
+					sk += "/"
+					closeTo(sk)
+					stack = append(stack, open{key: sk})
+					return nil
+				}
+				closeTo(sk)
 				info, err := d.Info()
 				if err != nil {
 					return nil
@@ -109,6 +144,12 @@ func diskUsage(w io.Writer, dir string, opt Options) error {
 				}
 				u.size += b
 				u.files++
+				if len(stack) > 0 {
+					stack[len(stack)-1].size += b
+				}
+				if b >= snapMin {
+					u.big[sk] = b
+				}
 				rel, _ := filepath.Rel(base, p)
 				if isRegen(filepath.ToSlash(rel)) || regenerable[u.name] {
 					u.regen += b
@@ -148,6 +189,24 @@ func diskUsage(w io.Writer, dir string, opt Options) error {
 	fmt.Fprintf(w, "%s — %s on disk in %s %s (like du: allocated blocks, hardlinks counted once, ignored files included)\n", abs, human(total), count(files), plural(files, "file"))
 	if regen > 0 {
 		fmt.Fprintf(w, "regenerable build output and caches (target/, node_modules/, .godot/, build/, dist/, __pycache__/, ...): %s = %s of the total\n", human(regen), pct(regen, total))
+	}
+	// what changed since the last run; -I measures something else, so it
+	// neither compares nor saves
+	if len(opt.Ignore) == 0 {
+		cur := &snapshot{Version: 1, Root: abs, Time: time.Now(), Total: total, Sizes: map[string]int64{}}
+		for _, u := range list {
+			for k, v := range u.big {
+				cur.Sizes[k] = v
+			}
+			key := u.name
+			if u.dir {
+				key += "/"
+			}
+			cur.Sizes[key] = u.size
+		}
+		prev, tooYoung := pickSnap(abs, opt.Since, cur.Time)
+		printDiff(w, prev, tooYoung, cur, opt.SinceRaw)
+		saveSnap(cur)
 	}
 	fmt.Fprintln(w)
 	shownN := min(len(list), 25)

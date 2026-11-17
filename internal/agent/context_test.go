@@ -20,7 +20,15 @@ import (
 // it on with workRepo.
 func TestMain(m *testing.M) {
 	os.Setenv("PRISM_NO_CONTEXT", "1")
-	os.Exit(m.Run())
+	// disk snapshots (glint -A -M) go to a scratch folder, not the user's
+	state, err := os.MkdirTemp("", "glint-state-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XDG_STATE_HOME", state)
+	code := m.Run()
+	os.RemoveAll(state)
+	os.Exit(code)
 }
 
 // isolateGit turns context on and keeps the user's git config and agent

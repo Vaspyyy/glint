@@ -20,7 +20,7 @@ description: Explore directories and codebases token-efficiently with `glint -A`
 | Only uncommitted changes | `glint -A --changed` |
 | Only recently modified files | `glint -A --since 2h` (30m, 3d, 1w, 6mo...) |
 | Last commit per top-level entry | `glint -A -c` |
-| What is using disk space | `glint -A -M <dir>` |
+| What is using disk space, and what grew | `glint -A -M <dir>` (`--since 3d` compares with 3 days ago) |
 | Hide paths by name glob | `glint -A -I '*.snap' -I fixtures` |
 | Exact listing like ls -l (mode, bytes, timestamp) plus line counts | `glint -A -l <dir>` |
 | Output that ignores the current work (no marks, no `context:` line) | `glint -A --no-context` or `PRISM_NO_CONTEXT=1` |
@@ -86,9 +86,21 @@ Header path + `:` + a symbol line's name is a ref that seek, recap and crux acce
 ### Disk: `glint -A -M <dir>`
 Matches `du`: allocated blocks, hardlinks counted once, ignored files included. Gives the biggest entries and their biggest children, with build output marked `[regenerable]`. The header totals how much is regenerable (target/, node_modules/, .godot/, build/, …).
 
+Under the header it says what changed since the last `glint -A -M` of the same folder:
+```
+since 2026-11-14 21:23 (3d ago): +54G in total (1019G → 1.0T); changes of 540M or more, where they happened ("new" can also mean under 32M before)
++57G .local/share/Steam/steamapps/
+  +36G "common/Euro Truck Simulator 2/" (new)
+  +13G workshop/content/227300/ (new)
+-16G .local/share/Trash/files/
+```
+- Each line is the folder or file where the change happened: a folder that grew only through one child is skipped for that child. Indented lines are inside the line above, with paths relative to it.
+- `(new)`/`(gone)`: not in the other snapshot. Entries under 32M aren't recorded, so `new` can also mean small before.
+- `--since 3d` compares with the newest snapshot at least 3 days old; without it, with the last run. The first run of a folder only saves (`disk snapshot saved`). `-I` neither compares nor saves.
+
 ### Filters
 - `--changed`: only uncommitted files. In a folder of repos it lists only the dirty repos, each followed by its changed file paths. Outside any git repo it refuses rather than guessing.
-- `--since 2h`: only files modified in that window. Folders without matches are dropped.
+- `--since 2h`: only files modified in that window. Folders without matches are dropped. (With `-M` it picks the disk snapshot to compare with instead.)
 
 ## Tips
 
