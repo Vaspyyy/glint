@@ -32,7 +32,7 @@ import (
 	"github.com/Vaspyyy/prism/report"
 )
 
-const version = "0.11.3"
+const version = "0.12.0"
 
 type options struct {
 	all                         int
