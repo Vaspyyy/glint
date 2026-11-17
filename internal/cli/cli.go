@@ -102,7 +102,7 @@ func newFlagSet(o *options) *pflag.FlagSet {
 	f.StringSliceVarP(&o.ignore, "ignore", "I", nil, "hide entries matching a glob (repeatable)")
 	f.BoolVar(&o.gitignore, "gitignore", false, "hide files ignored by git")
 	f.BoolVar(&o.changed, "changed", false, "only files with uncommitted git changes")
-	f.StringVar(&o.since, "since", "", "only entries modified within e.g. 30m, 2h, 3d, 1w, 6mo")
+	f.StringVar(&o.since, "since", "", "only entries modified within e.g. 30m, 2h, 3d, 1w, 6mo (with -A -M: compare with the disk snapshot from that long ago)")
 
 	f.StringVarP(&o.sortBy, "sort", "s", "name", "sort by: "+strings.Join(fsx.SortKeys, ", "))
 	f.BoolVarP(&o.sortTime, "sort-time", "t", false, "sort by modification time, newest first")
